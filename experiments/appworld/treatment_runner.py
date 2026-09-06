@@ -58,6 +58,7 @@ class AgentOutcome:
     reasoning_calls: int = 0
     interactions: int = 0
     error: str | None = None
+    last_code: str = ""
 
     @property
     def token_usage(self) -> dict[str, int]:
@@ -151,6 +152,7 @@ class OpenAICompatibleCodeAgent:
             outcome.interactions = interaction
             match = self._CODE_BLOCK.search(content)
             code = match.group(1).strip() if match else content.strip()
+            outcome.last_code = code
             if not code:
                 outcome.error = "Model returned no executable Python"
                 break
@@ -384,6 +386,13 @@ class AppWorldTreatmentRunner:
             variables=variables,
             token_usage=outcome.token_usage,
         )
+        record["agent_debug"] = {
+            "error": outcome.error,
+            "last_code_length": len(outcome.last_code),
+            "last_code_mentions_api_docs": "api_docs" in outcome.last_code,
+            "last_code_mentions_business_api": "apis." in outcome.last_code
+            and "api_docs" not in outcome.last_code,
+        }
         self._append_record(record)
         episode = AppWorldTraceAdapter().normalize(**record)
         if self.guard.allows_learning:
