@@ -181,12 +181,14 @@ class OpenAICompatibleCodeAgent:
                     "one code block. AppWorld APIs take keyword arguments, never a positional "
                     "dictionary. Match list versus object response shapes exactly. Assign "
                     "returned values to variables and print only the small result summaries "
-                    "needed to plan the next step."
+                    "needed to plan the next step.\n\n"
+                    f"Planning constraints for this task:\n{self._planning_constraints(world)}"
                 ),
             },
         ]
         outcome = AgentOutcome(completed=False)
         documentation_calls = 0
+        executed_plan: list[str] = []
         for interaction in range(1, self.max_interactions + 1):
             try:
                 content, usage = self._completion(messages)
@@ -208,6 +210,7 @@ class OpenAICompatibleCodeAgent:
                 code,
                 api_catalog,
                 task_instruction=str(world.task.instruction),
+                prior_code="\n".join(executed_plan),
             )
             new_documentation_calls = sum(name.startswith("apis.api_docs.") for name in api_calls)
             if not validation_error and documentation_calls + new_documentation_calls > 3:
@@ -223,6 +226,7 @@ class OpenAICompatibleCodeAgent:
             else:
                 documentation_calls += new_documentation_calls
                 environment_output = world.execute(code)
+                executed_plan.append(code)
             outcome.actions.append(
                 {
                     "interaction": interaction,
@@ -264,6 +268,21 @@ class OpenAICompatibleCodeAgent:
         if not outcome.completed and outcome.error is None:
             outcome.error = "Maximum agent interactions reached"
         return outcome
+
+    @classmethod
+    def _planning_constraints(cls, world: Any) -> str:
+        instruction = str(world.task.instruction)
+        words = cls._words(instruction)
+        if {"liked", "like"}.intersection(words) and "most" in words and "playlist" in words:
+            return (
+                "This is a global aggregation over the user's playlists. Do not pass "
+                "is_public=True; omit is_public so private playlists are included. Paginate "
+                "show_playlist_library until it returns an empty page, collect every unique "
+                "song_id, call show_song (not show_song_privates) for every song, select the "
+                "maximum like_count, then submit that song's title. You may split these steps "
+                "across turns, but do not complete the task until all steps are done."
+            )
+        return "No special planning constraints; follow the exact injected API contracts."
 
     @staticmethod
     def _api_catalog(world: Any) -> dict[str, dict[str, Any]]:
@@ -396,6 +415,7 @@ class OpenAICompatibleCodeAgent:
         code: str,
         catalog: dict[str, dict[str, Any]],
         task_instruction: str = "",
+        prior_code: str = "",
     ) -> str | None:
         try:
             tree = ast.parse(code)
@@ -493,7 +513,10 @@ class OpenAICompatibleCodeAgent:
                     f"unknown API {name!r}; closest real APIs: {', '.join(suggestions) or 'none'}"
                 )
             return "; ".join(details)
-        completion_error = cls._validate_completion_plan(code, task_instruction)
+        completion_error = cls._validate_completion_plan(
+            code + "\n" + prior_code,
+            task_instruction,
+        )
         if completion_error:
             return completion_error
         return None

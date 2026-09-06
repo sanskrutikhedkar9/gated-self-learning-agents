@@ -273,6 +273,28 @@ class AppWorldTreatmentRunnerTests(unittest.TestCase):
         )
         self.assertIsNone(error)
 
+    def test_completion_gate_accumulates_evidence_across_turns(self):
+        catalog = {
+            "apis.spotify.show_playlist_library": {
+                "parameters": {"properties": {"page_index": {}}}
+            },
+            "apis.spotify.show_song": {"parameters": {"properties": {"song_id": {}}}},
+            "apis.supervisor.complete_task": {
+                "parameters": {"properties": {"status": {}, "answer": {}}}
+            },
+        }
+        error = OpenAICompatibleCodeAgent._validate_code(
+            "apis.supervisor.complete_task(status='success', answer=best['title'])",
+            catalog,
+            task_instruction="What is the title of the most-liked song in my Spotify playlists.",
+            prior_code=(
+                "playlists = apis.spotify.show_playlist_library(page_index=0)\n"
+                "songs = [apis.spotify.show_song(song_id=1)]\n"
+                "best = max(songs, key=lambda song: song['like_count'])"
+            ),
+        )
+        self.assertIsNone(error)
+
     def test_user_playlist_query_rejects_public_only_filter(self):
         catalog = {
             "apis.spotify.show_playlist_library": {
