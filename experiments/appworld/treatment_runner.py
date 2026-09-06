@@ -149,7 +149,7 @@ class OpenAICompatibleCodeAgent:
         max_interactions: int = 25,
         max_tokens: int = 2000,
         timeout_seconds: int = 180,
-        retries: int = 3,
+        retries: int = 6,
     ):
         self.model = model
         self.api_key = api_key
@@ -581,15 +581,30 @@ class OpenAICompatibleCodeAgent:
                     body = json.loads(response.read().decode("utf-8"))
                 return str(body["choices"][0]["message"]["content"]), dict(body.get("usage", {}))
             except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:2000]
                 if exc.code not in {429, 500, 502, 503, 504} or attempt == self.retries:
-                    detail = exc.read().decode("utf-8", errors="replace")[:1000]
                     raise RuntimeError(f"Model API returned {exc.code}: {detail}") from exc
-                time.sleep(min(2 ** (attempt - 1), 8))
+                delay = self._retry_delay(exc, detail, attempt)
+                time.sleep(delay)
             except urllib.error.URLError as exc:
                 if attempt == self.retries:
                     raise RuntimeError(f"Could not reach model API: {exc}") from exc
                 time.sleep(min(2 ** (attempt - 1), 8))
         raise RuntimeError("Model request failed")
+
+    @staticmethod
+    def _retry_delay(exc: urllib.error.HTTPError, detail: str, attempt: int) -> float:
+        """Honor provider retry hints, especially token-per-minute 429 responses."""
+        header = exc.headers.get("Retry-After") if exc.headers else None
+        if header:
+            try:
+                return max(1.0, min(float(header), 60.0))
+            except ValueError:
+                pass
+        match = re.search(r"try again in ([0-9]+(?:\.[0-9]+)?)s", detail, re.IGNORECASE)
+        if match:
+            return max(1.0, min(float(match.group(1)) + 0.5, 60.0))
+        return min(float(2 ** (attempt - 1)), 30.0)
 
     @staticmethod
     def _jsonable_mapping(value: Any) -> dict[str, Any]:
