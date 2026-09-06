@@ -9,6 +9,8 @@ from self_learning_flows.adapters.appworld import (
     build_appworld_tool_registry,
 )
 
+from .treatment_runner import OpenAICompatibleCodeAgent
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -21,11 +23,23 @@ def main() -> int:
     with AppWorld(
         task_id=args.task_id,
         experiment_name=args.experiment_name,
-        load_ground_truth=True,
+        load_ground_truth=False,
     ) as world:
-        schemas = appworld_tool_schemas_from_docs(world.task.api_docs.function_calling())
+        docs = world.task.api_docs.function_calling()
+        schemas = appworld_tool_schemas_from_docs(docs)
         registry = build_appworld_tool_registry(world.apis, schemas)
-        print(f"schemas={len(schemas)} registered={len(registry.names())}")
+        catalog = OpenAICompatibleCodeAgent._api_catalog(world)
+        candidates = OpenAICompatibleCodeAgent._relevant_api_contracts(world, catalog)
+        candidate_names = [str(contract["call"]) for contract in candidates]
+        unknown = sorted(set(candidate_names) - set(catalog))
+        if unknown:
+            raise RuntimeError(f"candidate selector returned unknown APIs: {unknown}")
+        if "apis.supervisor.complete_task" not in candidate_names:
+            raise RuntimeError("candidate selector omitted supervisor completion API")
+        print(
+            f"schemas={len(schemas)} registered={len(registry.names())} "
+            f"catalog={len(catalog)} grounded_candidates={len(candidates)}"
+        )
     return 0
 
 

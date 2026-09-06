@@ -18,6 +18,9 @@ The runner enforces these boundaries:
 - every model call, including semantic family discovery/routing, variable
   extraction, compilation, and bounded repair, is included in token/call
   accounting by category.
+- the fallback code agent receives ranked contracts from AppWorld's real API
+  catalogue; invented API names and invisible documentation calls are rejected
+  before execution, and a redacted action transcript is retained for diagnosis.
 
 The predeclared settings are in `experiments/appworld/protocol.json`.
 It deliberately synthesizes after two verified source episodes. AppWorld has
@@ -99,7 +102,9 @@ python -m experiments.appworld.treatment_runner \
   --matcher-mode semantic \
   --limit 1
 
-appworld evaluate slf_train_smoke train
+head -n 1 "$APPWORLD_ROOT/data/datasets/train.txt" \
+  > "$APPWORLD_ROOT/data/datasets/train_smoke.txt"
+appworld evaluate --root "$APPWORLD_ROOT" slf_train_smoke train_smoke
 ```
 
 The first task should route to `full_agent`; no workflow has evidence yet. This
@@ -141,7 +146,7 @@ python -m experiments.appworld.treatment_runner \
   --matcher-mode semantic \
   --seal-after-run
 
-appworld evaluate slf_dev_v2 dev
+appworld evaluate --root "$APPWORLD_ROOT" slf_dev_v2 dev
 self-learning-flows list \
   --database experiments/appworld/outputs/slf_v2.db \
   --scope appworld
@@ -192,8 +197,8 @@ python -m experiments.appworld.treatment_runner \
   --database experiments/appworld/outputs/baseline_v2.db \
   --summary experiments/appworld/outputs/slf_baseline_test_normal_v2_summary.json
 
-appworld evaluate slf_test_normal_v2 test_normal
-appworld evaluate slf_baseline_test_normal_v2 test_normal
+appworld evaluate --root "$APPWORLD_ROOT" slf_test_normal_v2 test_normal
+appworld evaluate --root "$APPWORLD_ROOT" slf_baseline_test_normal_v2 test_normal
 ```
 
 Use the same model, random seed, maximum interactions, code commit, and task

@@ -5,6 +5,8 @@ import unittest
 from experiments.appworld.treatment_runner import (
     AgentOutcome,
     AppWorldTreatmentRunner,
+    OpenAICompatibleCodeAgent,
+    _debug_text,
 )
 from self_learning_flows.engine import InMemoryStore, SelfLearningFlowEngine
 from self_learning_flows.execution import ToolRegistry
@@ -84,7 +86,137 @@ class Agent:
         return AgentOutcome(completed=True, reasoning_calls=1, interactions=1)
 
 
+class ScriptedCodeAgent(OpenAICompatibleCodeAgent):
+    def __init__(self, responses):
+        super().__init__("fake-model", api_key="unused", max_interactions=len(responses))
+        self.responses = list(responses)
+        self.initial_prompt = ""
+
+    def _completion(self, messages):
+        if not self.initial_prompt:
+            self.initial_prompt = messages[1]["content"]
+        return self.responses.pop(0), {"prompt_tokens": 10, "completion_tokens": 5}
+
+
+class CodeAgentDocs:
+    def function_calling(self):
+        return [
+            {
+                "function": {
+                    "name": "mail__send",
+                    "description": "Send a message.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"body": {"type": "string"}},
+                    },
+                }
+            },
+            {
+                "function": {
+                    "name": "supervisor__complete_task",
+                    "description": "Complete the active task.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string"},
+                            "answer": {"type": "string"},
+                        },
+                    },
+                }
+            },
+        ]
+
+
+class CodeAgentWorld:
+    def __init__(self):
+        self.task = type(
+            "Task",
+            (),
+            {
+                "instruction": "send a message",
+                "supervisor": {},
+                "api_docs": CodeAgentDocs(),
+            },
+        )()
+        self.executed = []
+        self.completed = False
+
+    def execute(self, code):
+        self.executed.append(code)
+        if "complete_task" in code:
+            self.completed = True
+        return "{'sent': true}" if "mail.send" in code else "Execution successful."
+
+    def task_completed(self):
+        return self.completed
+
+
 class AppWorldTreatmentRunnerTests(unittest.TestCase):
+    def test_agent_diagnostics_redact_quoted_credentials(self):
+        text = _debug_text('{"access_token": "provider-secret", "value": 3}')
+        self.assertNotIn("provider-secret", text)
+        self.assertIn("<redacted>", text)
+
+    def test_schema_grounded_agent_rejects_invented_api_before_execution(self):
+        agent = ScriptedCodeAgent(
+            [
+                "```python\napis.mail.sned(body='hello')\n```",
+                "```python\nresult = apis.mail.send(body='hello')\nprint(result)\n```",
+                "```python\napis.supervisor.complete_task(status='success', answer='sent')\n```",
+            ]
+        )
+        world = CodeAgentWorld()
+        outcome = agent.run(world)
+        self.assertTrue(outcome.completed)
+        self.assertEqual(outcome.validation_failures, 1)
+        self.assertEqual(len(world.executed), 2)
+        self.assertNotIn("sned", "\n".join(world.executed))
+        self.assertIn("apis.mail.send", agent.initial_prompt)
+        self.assertIn("parameters", agent.initial_prompt)
+        self.assertFalse(outcome.actions[0]["executed"])
+        self.assertIn("closest real APIs", outcome.actions[0]["validation_error"])
+
+    def test_unprinted_documentation_call_is_rejected(self):
+        catalog = {"apis.mail.send": {}}
+        error = OpenAICompatibleCodeAgent._validate_code(
+            "apis.api_docs.show_api_descriptions(app_name='mail')", catalog
+        )
+        self.assertIn("print", error)
+
+        assigned_error = OpenAICompatibleCodeAgent._validate_code(
+            "docs = apis.api_docs.show_api_descriptions(app_name='mail')", catalog
+        )
+        self.assertIn("print", assigned_error)
+
+        visible_error = OpenAICompatibleCodeAgent._validate_code(
+            "docs = apis.api_docs.show_api_descriptions(app_name='mail')\nprint(docs)", catalog
+        )
+        self.assertIsNone(visible_error)
+
+    def test_cold_start_reuses_world_and_is_not_a_fallback(self):
+        worlds = []
+
+        def factory(task_id, experiment_name):
+            del task_id, experiment_name
+            world = World(len(worlds) + 1)
+            worlds.append(world)
+            return world
+
+        runner = AppWorldTreatmentRunner(
+            engine=SelfLearningFlowEngine(InMemoryStore()),
+            guard=ProtocolGuard(ProtocolConfig(), ExperimentPhase.TRAIN, "train"),
+            baseline_agent=Agent(),
+            world_factory=factory,
+            experiment_name="test",
+            condition="treatment",
+        )
+        result = runner.run_task("task-1")
+        self.assertTrue(result.success)
+        self.assertEqual(result.route, "full_agent")
+        self.assertEqual(result.fresh_worlds, 1)
+        self.assertEqual(len(worlds), 1)
+        self.assertTrue(worlds[0].closed)
+
     def test_failed_workflow_falls_back_in_a_new_world(self):
         schema = {"type": "object", "properties": {}}
         registry = ToolRegistry()

@@ -7,6 +7,8 @@ the benchmark's Pydantic-1 environment.
 from __future__ import annotations
 
 import argparse
+import ast
+import difflib
 import json
 import os
 import re
@@ -16,7 +18,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -53,11 +55,25 @@ from self_learning_flows.synthesis import ValidatedWorkflowCompiler
 def _debug_text(value: str, limit: int = 4000) -> str:
     """Keep one-run diagnostics bounded and redact common credential values."""
     text = re.sub(
-        r"(?i)(password|token|api[_-]?key|authorization|secret)(\s*[:=]\s*)([^,\n)}]+)",
-        r"\1\2<redacted>",
+        r'''(?i)(["']?(?:access_token|refresh_token|password|api[_-]?key|authorization|secret|token)["']?\s*[:=]\s*)(["'])(.*?)(\2)''',
+        r"\1\2<redacted>\4",
         str(value),
     )
+    text = re.sub(
+        r"(?i)(password|token|api[_-]?key|authorization|secret)(\s*[:=]\s*)([^,\n)}]+)",
+        r"\1\2<redacted>",
+        text,
+    )
     return text[:limit]
+
+
+def _bounded_observation(value: Any, limit: int = 16000) -> str:
+    """Retain both ends of large REPL results instead of hiding early entries."""
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    half = (limit - 80) // 2
+    return text[:half] + "\n... <observation truncated> ...\n" + text[-half:]
 
 
 @dataclass(slots=True)
@@ -71,6 +87,8 @@ class AgentOutcome:
     last_code: str = ""
     first_concrete_code: str = ""
     first_concrete_output: str = ""
+    validation_failures: int = 0
+    actions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def token_usage(self) -> dict[str, int]:
@@ -112,9 +130,15 @@ class TaskRun:
 
 
 class OpenAICompatibleCodeAgent:
-    """Small ReAct-style AppWorld code agent used identically in both conditions."""
+    """Schema-grounded AppWorld code agent used identically in both conditions."""
 
     _CODE_BLOCK = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+    _SUPERVISOR_APIS = {
+        "complete_task",
+        "show_account_passwords",
+        "show_active_task",
+        "show_profile",
+    }
 
     def __init__(
         self,
@@ -140,6 +164,8 @@ class OpenAICompatibleCodeAgent:
 
     def run(self, world: Any) -> AgentOutcome:
         supervisor = self._jsonable_mapping(world.task.supervisor)
+        api_catalog = self._api_catalog(world)
+        api_contracts = self._relevant_api_contracts(world, api_catalog)
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self._system_prompt()},
             {
@@ -147,14 +173,17 @@ class OpenAICompatibleCodeAgent:
                 "content": (
                     f"Task: {world.task.instruction}\n\n"
                     f"Supervisor account data: {json.dumps(supervisor, default=str)}\n\n"
-                    "Your first turn MUST use targeted API documentation search with keywords "
-                    "from the task. Do not call any business API until the exact documented "
-                    "function name and parameters are visible."
+                    "The following candidate contracts come directly from AppWorld's API "
+                    "schema catalogue. Use these exact names and parameters:\n"
+                    f"{json.dumps(api_contracts, ensure_ascii=False, default=str)}\n\n"
+                    "Begin solving the task. You may execute multiple related operations in "
+                    "one code block. Assign returned values to variables and print only the "
+                    "small result summaries needed to plan the next step."
                 ),
             },
         ]
         outcome = AgentOutcome(completed=False)
-        documentation_turns = 0
+        documentation_calls = 0
         for interaction in range(1, self.max_interactions + 1):
             try:
                 content, usage = self._completion(messages)
@@ -171,12 +200,39 @@ class OpenAICompatibleCodeAgent:
             if not code:
                 outcome.error = "Model returned no executable Python"
                 break
-            if "api_docs" in code and "apis." in code:
-                documentation_turns += 1
+            api_calls = self._api_call_names(code)
+            validation_error = self._validate_code(code, api_catalog)
+            new_documentation_calls = sum(name.startswith("apis.api_docs.") for name in api_calls)
+            if not validation_error and documentation_calls + new_documentation_calls > 3:
+                validation_error = (
+                    "documentation-call budget exhausted; use the injected exact contracts "
+                    "and execute a business API"
+                )
+            if validation_error:
+                outcome.validation_failures += 1
+                environment_output = "Code rejected before execution: " + validation_error
+                if outcome.validation_failures >= 5:
+                    outcome.error = "Five invalid model actions were rejected before execution"
             else:
-                documentation_turns = 0
-            environment_output = world.execute(code)
-            if not outcome.first_concrete_code and "api_docs" not in code:
+                documentation_calls += new_documentation_calls
+                environment_output = world.execute(code)
+            outcome.actions.append(
+                {
+                    "interaction": interaction,
+                    "code": _debug_text(code),
+                    "executed": validation_error is None,
+                    "validation_error": validation_error,
+                    "output": _debug_text(_bounded_observation(environment_output)),
+                }
+            )
+            if (
+                not outcome.first_concrete_code
+                and validation_error is None
+                and any(
+                    name.startswith("apis.") and not name.startswith("apis.api_docs.")
+                    for name in api_calls
+                )
+            ):
                 outcome.first_concrete_code = code
                 outcome.first_concrete_output = str(environment_output)
             messages.extend(
@@ -186,26 +242,172 @@ class OpenAICompatibleCodeAgent:
                         "role": "user",
                         "content": (
                             "Environment output:\n"
-                            f"{environment_output[-12000:]}\n\n"
+                            f"{_bounded_observation(environment_output)}\n\n"
                             "Continue with one Python code block. Complete the task through "
-                            "the supervisor API when ready."
-                            + (
-                                " You have already used documentation discovery repeatedly; "
-                                "do not call api_docs again. Execute the concrete business API "
-                                "identified from the task now."
-                                if documentation_turns >= 2
-                                else ""
-                            )
+                            "the supervisor API when ready. Never invent an API name."
                         ),
                     },
                 ]
             )
+            if outcome.error:
+                break
             if world.task_completed():
                 outcome.completed = True
                 break
         if not outcome.completed and outcome.error is None:
             outcome.error = "Maximum agent interactions reached"
         return outcome
+
+    @staticmethod
+    def _api_catalog(world: Any) -> dict[str, dict[str, Any]]:
+        """Return the exact Python call name and contract for every allowed API."""
+        catalog: dict[str, dict[str, Any]] = {}
+        for entry in world.task.api_docs.function_calling():
+            function = entry.get("function", {}) if isinstance(entry, dict) else {}
+            name = str(function.get("name", ""))
+            if "__" not in name:
+                continue
+            app, api = name.split("__", 1)
+            call_name = f"apis.{app}.{api}"
+            catalog[call_name] = {
+                "call": call_name,
+                "description": str(function.get("description", "")),
+                "parameters": function.get("parameters", {"type": "object", "properties": {}}),
+            }
+        return catalog
+
+    @classmethod
+    def _relevant_api_contracts(
+        cls,
+        world: Any,
+        catalog: dict[str, dict[str, Any]],
+        *,
+        maximum: int = 24,
+    ) -> list[dict[str, Any]]:
+        """Rank public API contracts using task words; no task answer is consulted."""
+        instruction_words = cls._words(str(world.task.instruction))
+        app_names = {name.split(".", 2)[1] for name in catalog}
+        mentioned_apps = {app for app in app_names if cls._words(app) & instruction_words}
+        ranked: list[tuple[float, str, dict[str, Any]]] = []
+        mandatory: list[tuple[str, dict[str, Any]]] = []
+        for name, contract in catalog.items():
+            _, app, api = name.split(".", 2)
+            api_words = cls._words(api)
+            description_words = cls._words(str(contract.get("description", "")))
+            if app == "supervisor" and api in cls._SUPERVISOR_APIS:
+                mandatory.append((name, contract))
+                continue
+            if app in mentioned_apps and api == "login":
+                mandatory.append((name, contract))
+                continue
+            score = 0.0
+            if app in mentioned_apps:
+                score += 8.0
+            score += 4.0 * len(api_words & instruction_words)
+            score += 1.5 * len(description_words & instruction_words)
+            if api in {"login", "search", "show", "list"}:
+                score += 0.25
+            if score > 0:
+                ranked.append((score, name, contract))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        selected = sorted(mandatory, key=lambda item: item[0])
+        selected_names = {name for name, _ in selected}
+        for _, name, contract in ranked:
+            if name not in selected_names:
+                selected.append((name, contract))
+                selected_names.add(name)
+            if len(selected) >= maximum:
+                break
+        return [contract for _, contract in selected[:maximum]]
+
+    @staticmethod
+    def _words(value: str) -> set[str]:
+        words: set[str] = set()
+        for raw in re.findall(r"[a-z0-9]+", value.lower().replace("_", " ")):
+            word = raw[:-1] if len(raw) > 3 and raw.endswith("s") else raw
+            words.add(word)
+        return words
+
+    @staticmethod
+    def _attribute_path(node: ast.AST) -> list[str]:
+        path: list[str] = []
+        while isinstance(node, ast.Attribute):
+            path.append(node.attr)
+            node = node.value
+        if isinstance(node, ast.Name):
+            path.append(node.id)
+        return list(reversed(path))
+
+    @classmethod
+    def _api_call_names(cls, code: str) -> list[str]:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return []
+        names: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            path = cls._attribute_path(node.func)
+            if len(path) >= 3 and path[0] == "apis":
+                names.append(".".join(path[:3]))
+        return names
+
+    @classmethod
+    def _validate_code(
+        cls,
+        code: str,
+        catalog: dict[str, dict[str, Any]],
+    ) -> str | None:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            return f"invalid Python syntax: {exc.msg}"
+        if not tree.body or all(
+            isinstance(node, (ast.Import, ast.ImportFrom, ast.Pass)) for node in tree.body
+        ):
+            return "code must perform useful work, not only import or pass"
+        for statement in tree.body:
+            if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+                continue
+            path = cls._attribute_path(statement.value.func)
+            if len(path) >= 3 and path[:2] == ["apis", "api_docs"]:
+                return "API documentation results are stdout-only; wrap this call in print(...)"
+        call_paths = [
+            cls._attribute_path(node.func)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+        ]
+        has_documentation_call = any(
+            len(path) >= 3 and path[:2] == ["apis", "api_docs"] for path in call_paths
+        )
+        has_print_call = any(path == ["print"] for path in call_paths)
+        if has_documentation_call and not has_print_call:
+            return "API documentation results are stdout-only; print the assigned result"
+        unknown = sorted(
+            {
+                name
+                for name in cls._api_call_names(code)
+                if not name.startswith("apis.api_docs.") and name not in catalog
+            }
+        )
+        if unknown:
+            details = []
+            available = sorted(catalog)
+            for name in unknown:
+                same_app = [
+                    candidate
+                    for candidate in available
+                    if candidate.split(".", 2)[1] == name.split(".", 2)[1]
+                ]
+                suggestions = difflib.get_close_matches(
+                    name, same_app or available, n=5, cutoff=0.2
+                )
+                details.append(
+                    f"unknown API {name!r}; closest real APIs: {', '.join(suggestions) or 'none'}"
+                )
+            return "; ".join(details)
+        return None
 
     def _completion(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
         payload = {
@@ -250,21 +452,17 @@ class OpenAICompatibleCodeAgent:
     def _system_prompt() -> str:
         return (
             "You solve tasks inside AppWorld by writing Python. The namespace already contains "
-            "`apis` and `requester`. Return exactly one Python code block per turn. Discover apps "
-            "with `apis.api_docs.show_app_descriptions()`, API names with "
-            "`apis.api_docs.show_api_descriptions(app_name=...)`, and exact parameters with "
-            "`apis.api_docs.show_api_doc(app_name=..., api_name=...)` or "
-            "`apis.api_docs.search_api_docs(query=...)`. Inspect results, use the supervisor's "
-            "synthetic account credentials when login is required, make the requested changes, "
-            "then call the documented supervisor completion API. Do not guess API parameters. "
-            "Use documentation only long enough to identify the next concrete business API. "
-            "After an API description is available, execute that API on the next turn instead "
-            "of requesting the same documentation again. Do not emit `pass`, imports-only code, "
-            "or guessed API names, or repeat the same documentation call. If execution reports "
-            "that no API is named or an argument is invalid, stop guessing and inspect the exact "
-            "API documentation before retrying. For read-only questions, gather the required "
-            "records, compute the answer, and always call `supervisor.complete_task` with the "
-            "answer when finished."
+            "`apis` and `requester`; variables persist between turns. Return exactly one Python "
+            "code block per turn. Candidate API names and parameter schemas are injected from "
+            "AppWorld's real catalogue. Use only exact names; never invent an API. Assign API "
+            "returns to variables and use print(...) whenever you need to observe a value; bare "
+            "expressions produce no visible output in this environment. If no injected contract "
+            "fits, inspect documentation with print(apis.api_docs.search_api_docs(...)) or "
+            "print(apis.api_docs.show_api_doc(...)). Documentation calls without print are "
+            "useless. Use the supervisor's synthetic account credentials when login is required. "
+            "Handle pagination with bounded loops, compute the requested result, and always call "
+            "apis.supervisor.complete_task(status='success', answer=...) when finished. Do not "
+            "repeat failed calls, documentation searches, or unchanged code."
         )
 
 
@@ -301,22 +499,29 @@ class AppWorldTreatmentRunner:
         overhead_before = self._overhead_usage()
         fallback_reason: str | None = None
         fresh_worlds = 1
+        world: Any | None = None
         if self.condition == "treatment":
             world = self.world_factory(task_id, self.experiment_name)
             try:
-                workflow_result, fallback_reason = self._try_workflow(world)
-                if workflow_result is not None:
-                    self._add_overhead(workflow_result, overhead_before)
-                    workflow_result.elapsed_ms = (time.perf_counter() - started) * 1000
-                    self._record_metric(workflow_result)
-                    return workflow_result
-            finally:
+                workflow_result, fallback_reason, discard_world = self._try_workflow(world)
+            except Exception:
                 self._close_world(world)
-            # This is deliberately a new AppWorld initialization. It resets the
-            # task DB, requester, Python namespace, request counters, and clock.
-            fresh_worlds += 1
+                raise
+            if workflow_result is not None:
+                self._close_world(world)
+                self._add_overhead(workflow_result, overhead_before)
+                workflow_result.elapsed_ms = (time.perf_counter() - started) * 1000
+                self._record_metric(workflow_result)
+                return workflow_result
+            if discard_world:
+                self._close_world(world)
+                world = None
+                # This is deliberately a new AppWorld initialization. It resets
+                # all state after an actual workflow execution attempt.
+                fresh_worlds += 1
 
-        world = self.world_factory(task_id, self.experiment_name)
+        if world is None:
+            world = self.world_factory(task_id, self.experiment_name)
         try:
             task_run = self._run_baseline(world, fallback_reason, fresh_worlds)
         finally:
@@ -329,7 +534,7 @@ class AppWorldTreatmentRunner:
     def run(self, task_ids: list[str]) -> list[TaskRun]:
         return [self.run_task(task_id) for task_id in task_ids]
 
-    def _try_workflow(self, world: Any) -> tuple[TaskRun | None, str | None]:
+    def _try_workflow(self, world: Any) -> tuple[TaskRun | None, str | None, bool]:
         registry = self._registry(world)
         request = TaskRequest(
             instruction=str(world.task.instruction),
@@ -342,25 +547,25 @@ class AppWorldTreatmentRunner:
         try:
             proposal = self.engine.propose(request)
         except Exception as exc:
-            return None, f"proposal_error:{type(exc).__name__}"
+            return None, f"proposal_error:{type(exc).__name__}", False
         if proposal is None:
-            return None, "no_eligible_workflow"
+            return None, "no_eligible_workflow", False
         unsupported = {
             str(step.kind)
             for step in WorkflowExecutor._walk_steps(proposal.workflow.steps)
             if str(step.kind) not in self.guard.config.supported_step_kinds
         }
         if unsupported:
-            return None, "unsupported_step_kinds:" + ",".join(sorted(unsupported))
+            return None, "unsupported_step_kinds:" + ",".join(sorted(unsupported)), False
         if proposal.missing_variables:
-            return None, "missing_variables:" + ",".join(proposal.missing_variables)
+            return None, "missing_variables:" + ",".join(proposal.missing_variables), False
         ProtocolGuard.approve_in_memory(proposal)
         verifier = AppWorldCompletionVerifier(world)
         executor = WorkflowExecutor(registry, verifier=verifier)
         result = executor.execute(request, proposal.workflow, proposal.confirmed_variables or {})
         if not (result.success and result.verified):
             self.guard.record_execution(self.engine, proposal.workflow.workflow_id, result)
-            return None, result.error or "workflow_verification_failed"
+            return None, result.error or "workflow_verification_failed", True
         evaluation = world.evaluate()
         if hasattr(evaluation, "to_dict"):
             evaluation_payload = dict(evaluation.to_dict())
@@ -396,6 +601,7 @@ class AppWorldTreatmentRunner:
                 fresh_worlds=1,
             ),
             None,
+            False,
         )
 
     def _run_baseline(
@@ -426,6 +632,8 @@ class AppWorldTreatmentRunner:
             and "api_docs" not in outcome.last_code,
             "first_concrete_code": _debug_text(outcome.first_concrete_code),
             "first_concrete_output": _debug_text(outcome.first_concrete_output),
+            "validation_failures": outcome.validation_failures,
+            "actions": outcome.actions,
         }
         self._append_record(record)
         if self.guard.allows_learning:
@@ -433,7 +641,7 @@ class AppWorldTreatmentRunner:
         return TaskRun(
             task_id=str(world.task.id),
             condition=self.condition,
-            route="full_agent" if fallback_reason is None else "fresh_world_fallback",
+            route="fresh_world_fallback" if fresh_worlds > 1 else "full_agent",
             success=bool(record["passed"]),
             fallback_reason=fallback_reason or outcome.error,
             input_tokens=outcome.input_tokens,
