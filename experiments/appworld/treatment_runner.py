@@ -147,8 +147,9 @@ class OpenAICompatibleCodeAgent:
                 "content": (
                     f"Task: {world.task.instruction}\n\n"
                     f"Supervisor account data: {json.dumps(supervisor, default=str)}\n\n"
-                    "Use targeted API documentation search with keywords from the task, "
-                    "then write the first concrete business API action."
+                    "Your first turn MUST use targeted API documentation search with keywords "
+                    "from the task. Do not call any business API until the exact documented "
+                    "function name and parameters are visible."
                 ),
             },
         ]
@@ -259,7 +260,9 @@ class OpenAICompatibleCodeAgent:
             "Use documentation only long enough to identify the next concrete business API. "
             "After an API description is available, execute that API on the next turn instead "
             "of requesting the same documentation again. Do not emit `pass`, imports-only code, "
-            "or repeated documentation calls. For read-only questions, gather the required "
+            "or guessed API names, or repeat the same documentation call. If execution reports "
+            "that no API is named or an argument is invalid, stop guessing and inspect the exact "
+            "API documentation before retrying. For read-only questions, gather the required "
             "records, compute the answer, and always call `supervisor.complete_task` with the "
             "answer when finished."
         )
