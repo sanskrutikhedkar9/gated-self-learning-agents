@@ -235,6 +235,44 @@ class AppWorldTreatmentRunnerTests(unittest.TestCase):
         )
         self.assertIsNone(valid_error)
 
+    def test_completion_gate_rejects_incomplete_most_liked_plan(self):
+        catalog = {
+            "apis.spotify.show_song_privates": {
+                "parameters": {"properties": {"song_id": {}, "access_token": {}}}
+            },
+            "apis.supervisor.complete_task": {
+                "parameters": {"properties": {"status": {}, "answer": {}}}
+            },
+        }
+        error = OpenAICompatibleCodeAgent._validate_code(
+            "liked = apis.spotify.show_song_privates(song_id=1, access_token='x')\n"
+            "apis.supervisor.complete_task(status='success', answer='Silver Lining')",
+            catalog,
+            task_instruction="What is the title of the most-liked song in my Spotify playlists.",
+        )
+        self.assertIn("do not complete yet", error)
+        self.assertIn("spotify.show_song", error)
+
+    def test_completion_gate_accepts_complete_most_liked_plan(self):
+        catalog = {
+            "apis.spotify.show_playlist_library": {
+                "parameters": {"properties": {"page_index": {}}}
+            },
+            "apis.spotify.show_song": {"parameters": {"properties": {"song_id": {}}}},
+            "apis.supervisor.complete_task": {
+                "parameters": {"properties": {"status": {}, "answer": {}}}
+            },
+        }
+        error = OpenAICompatibleCodeAgent._validate_code(
+            "playlists = apis.spotify.show_playlist_library(page_index=0)\n"
+            "songs = [apis.spotify.show_song(song_id=1)]\n"
+            "best = max(songs, key=lambda song: song['like_count'])\n"
+            "apis.supervisor.complete_task(status='success', answer=best['title'])",
+            catalog,
+            task_instruction="What is the title of the most-liked song in my Spotify playlists.",
+        )
+        self.assertIsNone(error)
+
     def test_cold_start_reuses_world_and_is_not_a_fallback(self):
         worlds = []
 

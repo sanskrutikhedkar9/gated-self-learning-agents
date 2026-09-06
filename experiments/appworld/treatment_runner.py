@@ -204,7 +204,11 @@ class OpenAICompatibleCodeAgent:
                 outcome.error = "Model returned no executable Python"
                 break
             api_calls = self._api_call_names(code)
-            validation_error = self._validate_code(code, api_catalog)
+            validation_error = self._validate_code(
+                code,
+                api_catalog,
+                task_instruction=str(world.task.instruction),
+            )
             new_documentation_calls = sum(name.startswith("apis.api_docs.") for name in api_calls)
             if not validation_error and documentation_calls + new_documentation_calls > 3:
                 validation_error = (
@@ -391,6 +395,7 @@ class OpenAICompatibleCodeAgent:
         cls,
         code: str,
         catalog: dict[str, dict[str, Any]],
+        task_instruction: str = "",
     ) -> str | None:
         try:
             tree = ast.parse(code)
@@ -469,6 +474,47 @@ class OpenAICompatibleCodeAgent:
                     f"unknown API {name!r}; closest real APIs: {', '.join(suggestions) or 'none'}"
                 )
             return "; ".join(details)
+        completion_error = cls._validate_completion_plan(code, task_instruction)
+        if completion_error:
+            return completion_error
+        return None
+
+    @classmethod
+    def _validate_completion_plan(cls, code: str, instruction: str) -> str | None:
+        """Reject premature answers whose code lacks the task's required evidence."""
+        if "complete_task" not in code:
+            return None
+        tree = ast.parse(code)
+        completion_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and cls._attribute_path(node.func)[:3]
+            == ["apis", "supervisor", "complete_task"]
+        ]
+        for node in completion_calls:
+            answer = next((keyword for keyword in node.keywords if keyword.arg == "answer"), None)
+            if answer is not None and isinstance(answer.value, ast.Constant) and answer.value.value is None:
+                return "do not complete the task with answer=None; compute the requested answer first"
+
+        normalized = cls._words(instruction)
+        if {"liked", "like"}.intersection(normalized) and "most" in normalized:
+            required = {
+                "spotify.show_playlist_library",
+                "spotify.show_song",
+                "like_count",
+                "max",
+            }
+            missing = sorted(item for item in required if item not in code)
+            if "spotify.show_song_privates" in code:
+                missing.append("spotify.show_song (show_song_privates has no title or like_count)")
+            if missing:
+                return (
+                    "do not complete yet; this is a global most-liked query. Gather every "
+                    "playlist/song, use spotify.show_song, and select max(like_count). "
+                    "Missing evidence: "
+                    + ", ".join(missing)
+                )
         return None
 
     def _completion(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
