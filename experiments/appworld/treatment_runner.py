@@ -76,6 +76,56 @@ def _bounded_observation(value: Any, limit: int = 16000) -> str:
     return text[:half] + "\n... <observation truncated> ...\n" + text[-half:]
 
 
+def _compact_data(value: Any, *, depth: int = 0) -> Any:
+    """Keep contract data useful without embedding giant response examples."""
+    if depth >= 4:
+        return "<nested>"
+    if isinstance(value, dict):
+        items = list(value.items())[:40]
+        return {str(key): _compact_data(item, depth=depth + 1) for key, item in items}
+    if isinstance(value, list):
+        return [_compact_data(item, depth=depth + 1) for item in value[:12]]
+    if isinstance(value, str):
+        return value if len(value) <= 500 else value[:500] + "..."
+    return value
+
+
+def _summarize_observation(value: Any, limit: int = 6000) -> str:
+    """Summarize Python-shaped API results before putting them in model context."""
+    text = str(value)
+    try:
+        parsed = ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        return _bounded_observation(text, limit)
+    summary = _summarize_value(parsed)
+    rendered = repr(summary)
+    return _bounded_observation(rendered, limit)
+
+
+def _summarize_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 3:
+        return "<nested>"
+    if isinstance(value, dict):
+        return {
+            "type": "object",
+            "keys": list(value)[:40],
+            "values": {
+                str(key): _summarize_value(item, depth=depth + 1)
+                for key, item in list(value.items())[:12]
+            },
+        }
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "length": len(value),
+            "first": [_summarize_value(item, depth=depth + 1) for item in value[:3]],
+            "last": [_summarize_value(item, depth=depth + 1) for item in value[-2:]],
+        }
+    if isinstance(value, str) and len(value) > 300:
+        return value[:300] + "..."
+    return value
+
+
 @dataclass(slots=True)
 class AgentOutcome:
     completed: bool
@@ -148,6 +198,7 @@ class OpenAICompatibleCodeAgent:
         base_url: str = "https://api.openai.com/v1/chat/completions",
         max_interactions: int = 25,
         max_tokens: int = 2000,
+        max_input_tokens: int = 30000,
         timeout_seconds: int = 180,
         retries: int = 6,
     ):
@@ -159,6 +210,7 @@ class OpenAICompatibleCodeAgent:
         self.base_url = endpoint
         self.max_interactions = max_interactions
         self.max_tokens = max_tokens
+        self.max_input_tokens = max_input_tokens
         self.timeout_seconds = timeout_seconds
         self.retries = retries
 
@@ -166,17 +218,18 @@ class OpenAICompatibleCodeAgent:
         supervisor = self._jsonable_mapping(world.task.supervisor)
         api_catalog = self._api_catalog(world)
         api_contracts = self._relevant_api_contracts(world, api_catalog)
+        compact_contracts = [self._compact_contract(contract) for contract in api_contracts]
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self._system_prompt()},
             {
                 "role": "user",
                 "content": (
                     f"Task: {world.task.instruction}\n\n"
-                    f"Supervisor account data: {json.dumps(supervisor, default=str)}\n\n"
+                    f"Supervisor account email: {supervisor.get('email', '<retrieve via API>')}\n\n"
                     "The following candidate contracts come directly from AppWorld's API "
                     "schema catalogue. Use these exact names, keyword parameters, and response "
                     "schemas:\n"
-                    f"{json.dumps(api_contracts, ensure_ascii=False, default=str)}\n\n"
+                    f"{json.dumps(compact_contracts, ensure_ascii=False, default=str)}\n\n"
                     "Begin solving the task. You may execute multiple related operations in "
                     "one code block. AppWorld APIs take keyword arguments, never a positional "
                     "dictionary. Match list versus object response shapes exactly. Assign "
@@ -189,7 +242,16 @@ class OpenAICompatibleCodeAgent:
         outcome = AgentOutcome(completed=False)
         documentation_calls = 0
         executed_plan: list[str] = []
+        repeated_actions = 0
+        previous_action_key = ""
         for interaction in range(1, self.max_interactions + 1):
+            estimated_input_tokens = self._estimate_prompt_tokens(messages)
+            if estimated_input_tokens > self.max_input_tokens:
+                outcome.error = (
+                    f"per-task input-token budget exhausted: estimated {estimated_input_tokens} "
+                    f"> {self.max_input_tokens}"
+                )
+                break
             try:
                 content, usage = self._completion(messages)
             except Exception as exc:  # provider failures become benchmark data
@@ -204,6 +266,15 @@ class OpenAICompatibleCodeAgent:
             outcome.last_code = code
             if not code:
                 outcome.error = "Model returned no executable Python"
+                break
+            action_key = re.sub(r"\s+", " ", code).strip()
+            if action_key == previous_action_key:
+                repeated_actions += 1
+            else:
+                repeated_actions = 0
+            previous_action_key = action_key
+            if repeated_actions >= 2:
+                outcome.error = "same model action repeated three times without progress"
                 break
             api_calls = self._api_call_names(code)
             validation_error = self._validate_code(
@@ -233,7 +304,7 @@ class OpenAICompatibleCodeAgent:
                     "code": _debug_text(code),
                     "executed": validation_error is None,
                     "validation_error": validation_error,
-                    "output": _debug_text(_bounded_observation(environment_output)),
+                    "output": _debug_text(_summarize_observation(environment_output)),
                 }
             )
             if (
@@ -253,13 +324,14 @@ class OpenAICompatibleCodeAgent:
                         "role": "user",
                         "content": (
                             "Environment output:\n"
-                            f"{_bounded_observation(environment_output)}\n\n"
+                            f"{_summarize_observation(environment_output)}\n\n"
                             "Continue with one Python code block. Complete the task through "
                             "the supervisor API when ready. Never invent an API name."
                         ),
                     },
                 ]
             )
+            messages = self._compact_messages(messages)
             if outcome.error:
                 break
             if world.task_completed():
@@ -268,6 +340,26 @@ class OpenAICompatibleCodeAgent:
         if not outcome.completed and outcome.error is None:
             outcome.error = "Maximum agent interactions reached"
         return outcome
+
+    @staticmethod
+    def _compact_contract(contract: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: _compact_data(contract[key])
+            for key in ("call", "description", "parameters", "response_schemas")
+            if key in contract
+        }
+
+    @staticmethod
+    def _compact_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        if len(messages) <= 6:
+            return messages
+        # Python variables persist inside AppWorld, so retain only the initial
+        # contract prompt and the latest two action/observation pairs.
+        return [*messages[:2], *messages[-4:]]
+
+    @staticmethod
+    def _estimate_prompt_tokens(messages: list[dict[str, str]]) -> int:
+        return max(1, sum(len(str(item.get("content", ""))) for item in messages) // 4)
 
     @classmethod
     def _planning_constraints(cls, world: Any) -> str:
@@ -984,6 +1076,7 @@ def main() -> int:
     parser.add_argument("--task-id", action="append", default=[])
     parser.add_argument("--random-seed", type=int, default=100)
     parser.add_argument("--max-interactions", type=int, default=25)
+    parser.add_argument("--max-input-tokens", type=int, default=30000)
     parser.add_argument(
         "--compiler-mode",
         choices=["deterministic", "annotate", "structural"],
@@ -1091,6 +1184,7 @@ def main() -> int:
         api_key=api_key,
         base_url=args.base_url,
         max_interactions=args.max_interactions,
+        max_input_tokens=args.max_input_tokens,
     )
     runner = AppWorldTreatmentRunner(
         engine=engine,
@@ -1174,6 +1268,7 @@ def main() -> int:
                 "dataset_name": args.dataset_name,
                 "random_seed": args.random_seed,
                 "max_interactions": args.max_interactions,
+                "max_input_tokens": args.max_input_tokens,
                 "compiler_mode": args.compiler_mode,
                 "family_mode": args.family_mode,
                 "matcher_mode": args.matcher_mode,

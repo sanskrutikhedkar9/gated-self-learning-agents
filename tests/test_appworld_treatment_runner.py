@@ -7,6 +7,7 @@ from experiments.appworld.treatment_runner import (
     AppWorldTreatmentRunner,
     OpenAICompatibleCodeAgent,
     _debug_text,
+    _summarize_observation,
 )
 from self_learning_flows.engine import InMemoryStore, SelfLearningFlowEngine
 from self_learning_flows.execution import ToolRegistry
@@ -172,6 +173,31 @@ class AppWorldTreatmentRunnerTests(unittest.TestCase):
         text = _debug_text('{"access_token": "provider-secret", "value": 3}')
         self.assertNotIn("provider-secret", text)
         self.assertIn("<redacted>", text)
+
+    def test_prompt_context_is_compacted(self):
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "initial contracts"},
+            *[
+                {"role": role, "content": str(index)}
+                for index in range(1, 9)
+                for role in ("assistant", "user")
+            ],
+        ]
+        compacted = OpenAICompatibleCodeAgent._compact_messages(messages)
+        self.assertEqual(len(compacted), 6)
+        self.assertEqual(compacted[:2], messages[:2])
+        self.assertEqual(compacted[-4:], messages[-4:])
+
+    def test_prompt_budget_is_estimated_from_context(self):
+        messages = [{"role": "user", "content": "x" * 4000}]
+        self.assertEqual(OpenAICompatibleCodeAgent._estimate_prompt_tokens(messages), 1000)
+
+    def test_large_api_observation_is_structurally_summarized(self):
+        summary = _summarize_observation(str([{"song_id": index} for index in range(100)]))
+        self.assertIn("'length': 100", summary)
+        self.assertIn("'song_id': 99", summary)
+        self.assertNotIn("'song_id': 50", summary)
 
     def test_schema_grounded_agent_rejects_invented_api_before_execution(self):
         agent = ScriptedCodeAgent(
