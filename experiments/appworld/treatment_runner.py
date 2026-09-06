@@ -427,7 +427,7 @@ def _git_commit(repository: Path) -> str:
     base = [
         "git",
         "-c",
-        f"safe.directory={repository.resolve()}",
+        f"safe.directory={repository.resolve().as_posix()}",
     ]
     status = subprocess.check_output(
         [*base, "status", "--porcelain", "--untracked-files=all"],

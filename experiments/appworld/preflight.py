@@ -138,8 +138,8 @@ def audit_repository(path: Path) -> dict[str, Any]:
     repository = path.resolve()
 
     def git(*arguments: str) -> str:
-        command = ["git", "-c", f"safe.directory={repository}", *arguments]
-        return subprocess.check_output(command, cwd=repository, text=True).strip()
+        command = ["git", "-c", f"safe.directory={repository.as_posix()}", *arguments]
+        return subprocess.check_output(command, cwd=repository, text=True).rstrip()
 
     try:
         commit = git("rev-parse", "HEAD")
