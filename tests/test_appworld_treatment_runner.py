@@ -99,6 +99,22 @@ class ScriptedCodeAgent(OpenAICompatibleCodeAgent):
 
 
 class CodeAgentDocs:
+    def items(self):
+        return {
+            "mail": {
+                "send": {
+                    "response_schemas": {
+                        "success": {"message_id": "integer", "sent": "boolean"}
+                    }
+                }
+            },
+            "supervisor": {
+                "complete_task": {
+                    "response_schemas": {"success": {"message": "string"}}
+                }
+            },
+        }.items()
+
     def function_calling(self):
         return [
             {
@@ -173,6 +189,8 @@ class AppWorldTreatmentRunnerTests(unittest.TestCase):
         self.assertNotIn("sned", "\n".join(world.executed))
         self.assertIn("apis.mail.send", agent.initial_prompt)
         self.assertIn("parameters", agent.initial_prompt)
+        self.assertIn("response_schemas", agent.initial_prompt)
+        self.assertIn("message_id", agent.initial_prompt)
         self.assertFalse(outcome.actions[0]["executed"])
         self.assertIn("closest real APIs", outcome.actions[0]["validation_error"])
 
@@ -192,6 +210,30 @@ class AppWorldTreatmentRunnerTests(unittest.TestCase):
             "docs = apis.api_docs.show_api_descriptions(app_name='mail')\nprint(docs)", catalog
         )
         self.assertIsNone(visible_error)
+
+    def test_api_calls_require_keyword_arguments_and_known_parameter_names(self):
+        catalog = {
+            "apis.mail.send": {
+                "parameters": {
+                    "type": "object",
+                    "properties": {"body": {"type": "string"}},
+                }
+            }
+        }
+        positional_error = OpenAICompatibleCodeAgent._validate_code(
+            "apis.mail.send({'body': 'hello'})", catalog
+        )
+        self.assertIn("keyword arguments only", positional_error)
+
+        unknown_argument_error = OpenAICompatibleCodeAgent._validate_code(
+            "apis.mail.send(message='hello')", catalog
+        )
+        self.assertIn("unknown keyword arguments", unknown_argument_error)
+
+        valid_error = OpenAICompatibleCodeAgent._validate_code(
+            "apis.mail.send(body='hello')", catalog
+        )
+        self.assertIsNone(valid_error)
 
     def test_cold_start_reuses_world_and_is_not_a_fallback(self):
         worlds = []

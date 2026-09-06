@@ -36,9 +36,13 @@ def main() -> int:
             raise RuntimeError(f"candidate selector returned unknown APIs: {unknown}")
         if "apis.supervisor.complete_task" not in candidate_names:
             raise RuntimeError("candidate selector omitted supervisor completion API")
+        response_contracts = sum("response_schemas" in contract for contract in candidates)
+        if response_contracts == 0:
+            raise RuntimeError("candidate contracts contain no response schemas")
         print(
             f"schemas={len(schemas)} registered={len(registry.names())} "
-            f"catalog={len(catalog)} grounded_candidates={len(candidates)}"
+            f"catalog={len(catalog)} grounded_candidates={len(candidates)} "
+            f"response_contracts={response_contracts}"
         )
     return 0
 

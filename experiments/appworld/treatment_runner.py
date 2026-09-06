@@ -174,11 +174,14 @@ class OpenAICompatibleCodeAgent:
                     f"Task: {world.task.instruction}\n\n"
                     f"Supervisor account data: {json.dumps(supervisor, default=str)}\n\n"
                     "The following candidate contracts come directly from AppWorld's API "
-                    "schema catalogue. Use these exact names and parameters:\n"
+                    "schema catalogue. Use these exact names, keyword parameters, and response "
+                    "schemas:\n"
                     f"{json.dumps(api_contracts, ensure_ascii=False, default=str)}\n\n"
                     "Begin solving the task. You may execute multiple related operations in "
-                    "one code block. Assign returned values to variables and print only the "
-                    "small result summaries needed to plan the next step."
+                    "one code block. AppWorld APIs take keyword arguments, never a positional "
+                    "dictionary. Match list versus object response shapes exactly. Assign "
+                    "returned values to variables and print only the small result summaries "
+                    "needed to plan the next step."
                 ),
             },
         ]
@@ -260,7 +263,7 @@ class OpenAICompatibleCodeAgent:
 
     @staticmethod
     def _api_catalog(world: Any) -> dict[str, dict[str, Any]]:
-        """Return the exact Python call name and contract for every allowed API."""
+        """Return exact call, input, and output contracts for every allowed API."""
         catalog: dict[str, dict[str, Any]] = {}
         for entry in world.task.api_docs.function_calling():
             function = entry.get("function", {}) if isinstance(entry, dict) else {}
@@ -274,6 +277,19 @@ class OpenAICompatibleCodeAgent:
                 "description": str(function.get("description", "")),
                 "parameters": function.get("parameters", {"type": "object", "properties": {}}),
             }
+        standard_docs = world.task.api_docs
+        items = getattr(standard_docs, "items", None)
+        if callable(items):
+            for app, api_docs in items():
+                if not isinstance(api_docs, dict):
+                    continue
+                for api, documentation in api_docs.items():
+                    call_name = f"apis.{app}.{api}"
+                    if call_name not in catalog or not isinstance(documentation, dict):
+                        continue
+                    response_schemas = documentation.get("response_schemas")
+                    if response_schemas is not None:
+                        catalog[call_name]["response_schemas"] = response_schemas
         return catalog
 
     @classmethod
@@ -384,6 +400,35 @@ class OpenAICompatibleCodeAgent:
         has_print_call = any(path == ["print"] for path in call_paths)
         if has_documentation_call and not has_print_call:
             return "API documentation results are stdout-only; print the assigned result"
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            path = cls._attribute_path(node.func)
+            if len(path) < 3 or path[0] != "apis" or path[:2] == ["apis", "api_docs"]:
+                continue
+            call_name = ".".join(path[:3])
+            if node.args:
+                return (
+                    f"{call_name} accepts keyword arguments only; do not pass a positional "
+                    "dictionary. Use name=value, for example api(argument=value)."
+                )
+            contract = catalog.get(call_name)
+            if not contract:
+                continue
+            parameters = contract.get("parameters", {})
+            properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
+            if not isinstance(properties, dict) or any(
+                keyword.arg is None for keyword in node.keywords
+            ):
+                continue
+            supplied = {str(keyword.arg) for keyword in node.keywords}
+            unknown_arguments = sorted(supplied - set(properties))
+            if unknown_arguments:
+                return (
+                    f"{call_name} received unknown keyword arguments: "
+                    f"{', '.join(unknown_arguments)}; allowed arguments: "
+                    f"{', '.join(sorted(properties)) or 'none'}"
+                )
         unknown = sorted(
             {
                 name
@@ -454,13 +499,17 @@ class OpenAICompatibleCodeAgent:
             "You solve tasks inside AppWorld by writing Python. The namespace already contains "
             "`apis` and `requester`; variables persist between turns. Return exactly one Python "
             "code block per turn. Candidate API names and parameter schemas are injected from "
-            "AppWorld's real catalogue. Use only exact names; never invent an API. Assign API "
+            "AppWorld's real catalogue, together with response schemas when available. Use only "
+            "exact names; never invent an API. Call APIs with keyword arguments (`name=value`), "
+            "never by passing a dictionary positionally. Respect whether each response is a list "
+            "or object and only read fields shown in its response schema. Assign API "
             "returns to variables and use print(...) whenever you need to observe a value; bare "
             "expressions produce no visible output in this environment. If no injected contract "
             "fits, inspect documentation with print(apis.api_docs.search_api_docs(...)) or "
             "print(apis.api_docs.show_api_doc(...)). Documentation calls without print are "
             "useless. Use the supervisor's synthetic account credentials when login is required. "
-            "Handle pagination with bounded loops, compute the requested result, and always call "
+            "For paginated list APIs, request pages in a bounded loop until an empty page. "
+            "Compute the requested result, and always call "
             "apis.supervisor.complete_task(status='success', answer=...) when finished. Do not "
             "repeat failed calls, documentation searches, or unchanged code."
         )
