@@ -50,6 +50,16 @@ from self_learning_flows.storage import SQLiteStore
 from self_learning_flows.synthesis import ValidatedWorkflowCompiler
 
 
+def _debug_text(value: str, limit: int = 4000) -> str:
+    """Keep one-run diagnostics bounded and redact common credential values."""
+    text = re.sub(
+        r"(?i)(password|token|api[_-]?key|authorization|secret)(\s*[:=]\s*)([^,\n)}]+)",
+        r"\1\2<redacted>",
+        str(value),
+    )
+    return text[:limit]
+
+
 @dataclass(slots=True)
 class AgentOutcome:
     completed: bool
@@ -59,6 +69,8 @@ class AgentOutcome:
     interactions: int = 0
     error: str | None = None
     last_code: str = ""
+    first_concrete_code: str = ""
+    first_concrete_output: str = ""
 
     @property
     def token_usage(self) -> dict[str, int]:
@@ -135,11 +147,13 @@ class OpenAICompatibleCodeAgent:
                 "content": (
                     f"Task: {world.task.instruction}\n\n"
                     f"Supervisor account data: {json.dumps(supervisor, default=str)}\n\n"
-                    "Write the first Python action."
+                    "Use targeted API documentation search with keywords from the task, "
+                    "then write the first concrete business API action."
                 ),
             },
         ]
         outcome = AgentOutcome(completed=False)
+        documentation_turns = 0
         for interaction in range(1, self.max_interactions + 1):
             try:
                 content, usage = self._completion(messages)
@@ -156,7 +170,14 @@ class OpenAICompatibleCodeAgent:
             if not code:
                 outcome.error = "Model returned no executable Python"
                 break
+            if "api_docs" in code and "apis." in code:
+                documentation_turns += 1
+            else:
+                documentation_turns = 0
             environment_output = world.execute(code)
+            if not outcome.first_concrete_code and "api_docs" not in code:
+                outcome.first_concrete_code = code
+                outcome.first_concrete_output = str(environment_output)
             messages.extend(
                 [
                     {"role": "assistant", "content": content},
@@ -167,6 +188,13 @@ class OpenAICompatibleCodeAgent:
                             f"{environment_output[-12000:]}\n\n"
                             "Continue with one Python code block. Complete the task through "
                             "the supervisor API when ready."
+                            + (
+                                " You have already used documentation discovery repeatedly; "
+                                "do not call api_docs again. Execute the concrete business API "
+                                "identified from the task now."
+                                if documentation_turns >= 2
+                                else ""
+                            )
                         ),
                     },
                 ]
@@ -393,6 +421,8 @@ class AppWorldTreatmentRunner:
             "last_code_mentions_api_docs": "api_docs" in outcome.last_code,
             "last_code_mentions_business_api": "apis." in outcome.last_code
             and "api_docs" not in outcome.last_code,
+            "first_concrete_code": _debug_text(outcome.first_concrete_code),
+            "first_concrete_output": _debug_text(outcome.first_concrete_output),
         }
         self._append_record(record)
         if self.guard.allows_learning:
