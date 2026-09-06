@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from experiments.appworld.preflight import (
     audit_dataset,
     audit_native_outputs,
     audit_protocol,
     audit_records,
+    main,
 )
 from self_learning_flows.research_protocol import ProtocolConfig
 
@@ -25,6 +29,10 @@ class AppWorldPreflightTests(unittest.TestCase):
         self.assertEqual(names["protocol_exact.json"]["family_mode"], "exact")
         self.assertEqual(names["protocol_semantic.json"]["matcher_mode"], "semantic")
         self.assertEqual(names["protocol_annotate.json"]["compiler_mode"], "annotate")
+        self.assertEqual(
+            {treatment["min_synthesis_observations"] for treatment in names.values()},
+            {2},
+        )
 
     def test_protocol_audit_rejects_wrong_phase_split(self):
         protocol = {
@@ -46,6 +54,17 @@ class AppWorldPreflightTests(unittest.TestCase):
             result = audit_dataset(path, min_observations=3)
         self.assertEqual(result["scenarios"], 1)
         self.assertEqual(result["maximum_same_scenario_online_routes"], 0)
+
+    def test_missing_dataset_is_a_clean_preflight_blocker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.txt"
+            output = StringIO()
+            with patch("sys.argv", ["preflight", "--dataset", str(missing)]):
+                with redirect_stdout(output):
+                    exit_code = main()
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertIn("cannot be read", report["blockers"][0])
 
     def test_native_logs_are_not_mistaken_for_replayable_traces(self):
         with tempfile.TemporaryDirectory() as directory:

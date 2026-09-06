@@ -20,6 +20,10 @@ The runner enforces these boundaries:
   accounting by category.
 
 The predeclared settings are in `experiments/appworld/protocol.json`.
+It deliberately synthesizes after two verified source episodes. AppWorld has
+three variants per scenario, so variant three becomes an unseen shadow trial;
+activation still requires three verified shadow executions and the Wilson
+confidence gate. Source traces are never counted as held-out successes.
 
 ## 1. Environment
 

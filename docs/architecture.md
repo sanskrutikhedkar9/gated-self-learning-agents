@@ -129,11 +129,18 @@ Pattern support answers “have we seen the same procedure repeatedly?” Execut
 reliability answers “does the compiled procedure work on new inputs?” They are
 not combined into one misleading count:
 
-- three verified source episodes promote a candidate to shadow by default;
+- three verified source episodes promote a candidate to shadow by default in
+  the framework-neutral policy;
 - three confirmed, verified shadow executions at >=90% observed success and an
   adequate Wilson lower bound promote it to active;
 - two consecutive failures quarantine it;
 - `ResearchPromotionPolicy` uses materially stricter thresholds.
+
+The predeclared AppWorld protocol uses two replay-validated source episodes,
+not the general default. Because each AppWorld scenario has exactly three
+variants, the third variant is then a genuinely unseen shadow execution. It
+still takes three successful shadow executions and the Wilson gate to activate
+a workflow, so two demonstrations alone never make a test-visible policy.
 
 ## Computation routing
 

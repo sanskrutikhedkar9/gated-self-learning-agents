@@ -109,6 +109,13 @@ feedback may score a completed test attempt but cannot trigger fallback or
 update memory. This avoids both cross-task test learning and evaluator-oracle
 retry leakage.
 
+AppWorld's three variants per scenario are treated chronologically: the v2
+protocol permits synthesis after two verified source variants, while the third
+is an unseen shadow execution rather than compiler evidence. Activation still
+requires three successful held-out executions and its Wilson lower bound, which
+must come from safe reuse across related families rather than relabeling the
+two source demonstrations as validation.
+
 ## Main threats to validity
 
 - A successful trace may contain unnecessary or accidentally correlated steps.

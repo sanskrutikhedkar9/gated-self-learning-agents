@@ -221,26 +221,55 @@ def main() -> int:
     parser.add_argument("--split")
     parser.add_argument("--database", type=Path)
     parser.add_argument("--freeze-manifest", type=Path)
-    parser.add_argument("--min-observations", type=int, default=3)
+    parser.add_argument(
+        "--min-observations",
+        type=int,
+        help=(
+            "override the source-evidence threshold; by default this is read "
+            "from the declared protocol"
+        ),
+    )
     args = parser.parse_args()
     if not any((args.dataset, args.native_outputs, args.records, args.repository, args.protocol)):
         parser.error(
             "pass at least one audit input: --dataset, --native-outputs, --records, "
             "--repository, or --protocol"
         )
-    if args.min_observations < 1:
+    min_observations = args.min_observations
+    if min_observations is None and args.protocol:
+        try:
+            protocol_config = ProtocolConfig.load(args.protocol)
+            min_observations = int(
+                protocol_config.metadata.get("treatment", {}).get("min_synthesis_observations", 3)
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            # The protocol audit below reports the authoritative parse error.
+            min_observations = 3
+    if min_observations is None:
+        min_observations = 3
+    if min_observations < 1:
         parser.error("--min-observations must be positive")
 
     report: dict[str, Any] = {"blockers": [], "warnings": []}
     if args.dataset:
-        dataset = audit_dataset(args.dataset, min_observations=args.min_observations)
-        report["dataset"] = dataset
-        if dataset["maximum_same_scenario_online_routes"] == 0:
-            report["warnings"].append(
-                "The promotion threshold leaves no later variant in the same scenario for reuse."
-            )
+        try:
+            dataset = audit_dataset(args.dataset, min_observations=min_observations)
+        except (OSError, UnicodeError) as exc:
+            report["dataset"] = {
+                "path": str(args.dataset),
+                "valid": False,
+                "error": str(exc),
+            }
+            report["blockers"].append("The declared dataset cannot be read.")
+        else:
+            report["dataset"] = dataset
+            if dataset["maximum_same_scenario_online_routes"] == 0:
+                report["warnings"].append(
+                    "The promotion threshold leaves no later variant in the same scenario "
+                    "for reuse."
+                )
     if args.native_outputs:
-        native = audit_native_outputs(args.native_outputs, min_observations=args.min_observations)
+        native = audit_native_outputs(args.native_outputs, min_observations=min_observations)
         report["native_outputs"] = native
         if native["is_appworld_ground_truth_verification"]:
             report["blockers"].append(
@@ -258,16 +287,26 @@ def main() -> int:
                 "redacted records."
             )
     if args.records:
-        records = audit_records(args.records, min_observations=args.min_observations)
-        report["records"] = records
-        if not records["ingestible"]:
-            report["blockers"].append(
-                "Normalized records failed strict provenance/trace validation."
-            )
-        elif records["potential_online_routes_after_threshold"] == 0:
-            report["warnings"].append(
-                "No record arrives after its structural signature reaches the promotion threshold."
-            )
+        try:
+            records = audit_records(args.records, min_observations=min_observations)
+        except (OSError, UnicodeError) as exc:
+            report["records"] = {
+                "path": str(args.records),
+                "valid": False,
+                "error": str(exc),
+            }
+            report["blockers"].append("The normalized records file cannot be read.")
+        else:
+            report["records"] = records
+            if not records["ingestible"]:
+                report["blockers"].append(
+                    "Normalized records failed strict provenance/trace validation."
+                )
+            elif records["potential_online_routes_after_threshold"] == 0:
+                report["warnings"].append(
+                    "No record arrives after its structural signature reaches the promotion "
+                    "threshold."
+                )
     if args.repository:
         repository = audit_repository(args.repository)
         report["repository"] = repository

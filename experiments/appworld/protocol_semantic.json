@@ -13,12 +13,12 @@
       "compiler_mode": "deterministic",
       "family_mode": "hybrid",
       "matcher_mode": "semantic",
-      "min_synthesis_observations": 3,
+      "min_synthesis_observations": 2,
       "max_repair_attempts": 2,
       "test_time_learning": false
     },
     "promotion_config": {
-      "min_pattern_observations": 3,
+      "min_pattern_observations": 2,
       "min_shadow_executions": 3,
       "min_success_rate": 0.9,
       "min_wilson_lower_bound": 0.4,
@@ -27,4 +27,3 @@
     "ablation": "hybrid semantic discovery/routing + deterministic compiler"
   }
 }
-

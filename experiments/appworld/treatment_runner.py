@@ -566,7 +566,7 @@ def main() -> int:
     )
     parser.add_argument("--family-mode", choices=["exact", "hybrid"], default="hybrid")
     parser.add_argument("--matcher-mode", choices=["lexical", "semantic"], default="semantic")
-    parser.add_argument("--min-synthesis-observations", type=int, default=3)
+    parser.add_argument("--min-synthesis-observations", type=int, default=2)
     parser.add_argument("--max-repair-attempts", type=int, default=2)
     args = parser.parse_args()
 
