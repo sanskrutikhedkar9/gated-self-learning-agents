@@ -151,6 +151,17 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv314/
+.wheeltest/
+.appworld-venv/
+.venv-appworld/
+.venv-linux/
+.appworld-runtime/
+experiments/appworld/outputs/
+# AppWorld's protected task data and native outputs can contain benchmark
+# ground truth, account passwords, access tokens, and other simulated PII.
+data/
+experiments/outputs/
 env/
 venv/
 ENV/
@@ -202,6 +213,8 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+.self_learning_flows/
+.tmp/
 
 # Ruff stuff:
 .ruff_cache/

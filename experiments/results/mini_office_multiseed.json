@@ -1,0 +1,185 @@
+{
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "aggregate": {
+    "task_success_rate": {
+      "mean": 1.0,
+      "stdev": 0.0
+    },
+    "full_agent_calls_avoided_rate": {
+      "mean": 0.4666666666666667,
+      "stdev": 0.018633899812498255
+    },
+    "token_reduction_rate": {
+      "mean": 0.4378422391857506,
+      "stdev": 0.017583474167460738
+    },
+    "workflow_tasks": {
+      "mean": 11.2,
+      "stdev": 0.4472135954999579
+    },
+    "model_free_workflow_tasks": {
+      "mean": 8.2,
+      "stdev": 0.4472135954999579
+    },
+    "workflow_fallbacks": {
+      "mean": 0,
+      "stdev": 0.0
+    },
+    "offer_false_positive_rate": {
+      "mean": 0.0,
+      "stdev": 0.0
+    }
+  },
+  "runs": [
+    {
+      "dataset": "mini_office/data/mini_office_v1.jsonl",
+      "seed": 0,
+      "tasks": 24,
+      "successful_tasks": 24,
+      "task_success_rate": 1.0,
+      "baseline_agent_tasks": 12,
+      "workflow_tasks": 12,
+      "workflow_successes": 12,
+      "workflow_fallbacks": 0,
+      "model_free_workflow_tasks": 9,
+      "slm_workflow_tasks": 3,
+      "full_agent_reasoning_calls": 12,
+      "workflow_generation_calls": 3,
+      "all_agent_baseline_tokens": 9825,
+      "self_learning_total_tokens": 5261,
+      "baseline_tokens": 4971,
+      "workflow_tokens": 290,
+      "token_reduction_rate": 0.464529262086514,
+      "full_agent_calls_avoided_rate": 0.5,
+      "mean_workflow_match_score": 0.653449029604553,
+      "negative_probes": 6,
+      "false_workflow_offers": 0,
+      "offer_false_positive_rate": 0.0,
+      "learned_workflows": {
+        "active": 4
+      }
+    },
+    {
+      "dataset": "mini_office/data/mini_office_v1.jsonl",
+      "seed": 1,
+      "tasks": 24,
+      "successful_tasks": 24,
+      "task_success_rate": 1.0,
+      "baseline_agent_tasks": 13,
+      "workflow_tasks": 11,
+      "workflow_successes": 11,
+      "workflow_fallbacks": 0,
+      "model_free_workflow_tasks": 8,
+      "slm_workflow_tasks": 3,
+      "full_agent_reasoning_calls": 13,
+      "workflow_generation_calls": 3,
+      "all_agent_baseline_tokens": 9825,
+      "self_learning_total_tokens": 5485,
+      "baseline_tokens": 5197,
+      "workflow_tokens": 288,
+      "token_reduction_rate": 0.4417302798982188,
+      "full_agent_calls_avoided_rate": 0.4583333333333333,
+      "mean_workflow_match_score": 0.6542854722822439,
+      "negative_probes": 6,
+      "false_workflow_offers": 0,
+      "offer_false_positive_rate": 0.0,
+      "learned_workflows": {
+        "active": 3,
+        "shadow": 1
+      }
+    },
+    {
+      "dataset": "mini_office/data/mini_office_v1.jsonl",
+      "seed": 2,
+      "tasks": 24,
+      "successful_tasks": 24,
+      "task_success_rate": 1.0,
+      "baseline_agent_tasks": 13,
+      "workflow_tasks": 11,
+      "workflow_successes": 11,
+      "workflow_fallbacks": 0,
+      "model_free_workflow_tasks": 8,
+      "slm_workflow_tasks": 3,
+      "full_agent_reasoning_calls": 13,
+      "workflow_generation_calls": 3,
+      "all_agent_baseline_tokens": 9825,
+      "self_learning_total_tokens": 5711,
+      "baseline_tokens": 5422,
+      "workflow_tokens": 289,
+      "token_reduction_rate": 0.4187277353689567,
+      "full_agent_calls_avoided_rate": 0.4583333333333333,
+      "mean_workflow_match_score": 0.6525266691766975,
+      "negative_probes": 6,
+      "false_workflow_offers": 0,
+      "offer_false_positive_rate": 0.0,
+      "learned_workflows": {
+        "active": 3,
+        "shadow": 1
+      }
+    },
+    {
+      "dataset": "mini_office/data/mini_office_v1.jsonl",
+      "seed": 3,
+      "tasks": 24,
+      "successful_tasks": 24,
+      "task_success_rate": 1.0,
+      "baseline_agent_tasks": 13,
+      "workflow_tasks": 11,
+      "workflow_successes": 11,
+      "workflow_fallbacks": 0,
+      "model_free_workflow_tasks": 8,
+      "slm_workflow_tasks": 3,
+      "full_agent_reasoning_calls": 13,
+      "workflow_generation_calls": 3,
+      "all_agent_baseline_tokens": 9825,
+      "self_learning_total_tokens": 5641,
+      "baseline_tokens": 5356,
+      "workflow_tokens": 285,
+      "token_reduction_rate": 0.425852417302799,
+      "full_agent_calls_avoided_rate": 0.4583333333333333,
+      "mean_workflow_match_score": 0.6487340682127727,
+      "negative_probes": 6,
+      "false_workflow_offers": 0,
+      "offer_false_positive_rate": 0.0,
+      "learned_workflows": {
+        "active": 3,
+        "shadow": 1
+      }
+    },
+    {
+      "dataset": "mini_office/data/mini_office_v1.jsonl",
+      "seed": 4,
+      "tasks": 24,
+      "successful_tasks": 24,
+      "task_success_rate": 1.0,
+      "baseline_agent_tasks": 13,
+      "workflow_tasks": 11,
+      "workflow_successes": 11,
+      "workflow_fallbacks": 0,
+      "model_free_workflow_tasks": 8,
+      "slm_workflow_tasks": 3,
+      "full_agent_reasoning_calls": 13,
+      "workflow_generation_calls": 3,
+      "all_agent_baseline_tokens": 9825,
+      "self_learning_total_tokens": 5518,
+      "baseline_tokens": 5230,
+      "workflow_tokens": 288,
+      "token_reduction_rate": 0.43837150127226465,
+      "full_agent_calls_avoided_rate": 0.4583333333333333,
+      "mean_workflow_match_score": 0.6526502971427581,
+      "negative_probes": 6,
+      "false_workflow_offers": 0,
+      "offer_false_positive_rate": 0.0,
+      "learned_workflows": {
+        "active": 3,
+        "shadow": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,198 @@
+{
+  "dataset": "mini_office/data/mini_office_v1.jsonl",
+  "seed": null,
+  "tasks": 24,
+  "successful_tasks": 24,
+  "task_success_rate": 1.0,
+  "baseline_agent_tasks": 12,
+  "workflow_tasks": 12,
+  "workflow_successes": 12,
+  "workflow_fallbacks": 0,
+  "model_free_workflow_tasks": 9,
+  "slm_workflow_tasks": 3,
+  "full_agent_reasoning_calls": 12,
+  "workflow_generation_calls": 3,
+  "all_agent_baseline_tokens": 9825,
+  "self_learning_total_tokens": 5249,
+  "baseline_tokens": 4959,
+  "workflow_tokens": 290,
+  "token_reduction_rate": 0.4657506361323155,
+  "full_agent_calls_avoided_rate": 0.5,
+  "mean_workflow_match_score": 0.6588061579844137,
+  "negative_probes": 6,
+  "false_workflow_offers": 0,
+  "offer_false_positive_rate": 0.0,
+  "learned_workflows": {
+    "active": 4
+  },
+  "routes": [
+    {
+      "task_id": "reschedule-01",
+      "pattern": "reschedule_and_notify",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "reschedule-02",
+      "pattern": "reschedule_and_notify",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "reschedule-03",
+      "pattern": "reschedule_and_notify",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "reschedule-04",
+      "pattern": "reschedule_and_notify",
+      "route": "workflow",
+      "workflow": "Reschedule And Notify",
+      "match_score": 0.6536,
+      "verified": true
+    },
+    {
+      "task_id": "reschedule-05",
+      "pattern": "reschedule_and_notify",
+      "route": "workflow",
+      "workflow": "Reschedule And Notify",
+      "match_score": 0.6304,
+      "verified": true
+    },
+    {
+      "task_id": "reschedule-06",
+      "pattern": "reschedule_and_notify",
+      "route": "workflow",
+      "workflow": "Reschedule And Notify",
+      "match_score": 0.6951,
+      "verified": true
+    },
+    {
+      "task_id": "ticket-01",
+      "pattern": "create_assign_ticket",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "ticket-02",
+      "pattern": "create_assign_ticket",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "ticket-03",
+      "pattern": "create_assign_ticket",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "ticket-04",
+      "pattern": "create_assign_ticket",
+      "route": "workflow",
+      "workflow": "Create Assign Ticket",
+      "match_score": 0.6563,
+      "verified": true
+    },
+    {
+      "task_id": "ticket-05",
+      "pattern": "create_assign_ticket",
+      "route": "workflow",
+      "workflow": "Create Assign Ticket",
+      "match_score": 0.6769,
+      "verified": true
+    },
+    {
+      "task_id": "ticket-06",
+      "pattern": "create_assign_ticket",
+      "route": "workflow",
+      "workflow": "Create Assign Ticket",
+      "match_score": 0.647,
+      "verified": true
+    },
+    {
+      "task_id": "onboard-01",
+      "pattern": "onboard_employee",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "onboard-02",
+      "pattern": "onboard_employee",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "onboard-03",
+      "pattern": "onboard_employee",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "onboard-04",
+      "pattern": "onboard_employee",
+      "route": "workflow",
+      "workflow": "Onboard Employee",
+      "match_score": 0.6736,
+      "verified": true
+    },
+    {
+      "task_id": "onboard-05",
+      "pattern": "onboard_employee",
+      "route": "workflow",
+      "workflow": "Onboard Employee",
+      "match_score": 0.601,
+      "verified": true
+    },
+    {
+      "task_id": "onboard-06",
+      "pattern": "onboard_employee",
+      "route": "workflow",
+      "workflow": "Onboard Employee",
+      "match_score": 0.6877,
+      "verified": true
+    },
+    {
+      "task_id": "digest-01",
+      "pattern": "priority_digest",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "digest-02",
+      "pattern": "priority_digest",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "digest-03",
+      "pattern": "priority_digest",
+      "route": "full_agent",
+      "verified": true
+    },
+    {
+      "task_id": "digest-04",
+      "pattern": "priority_digest",
+      "route": "workflow",
+      "workflow": "Priority Digest",
+      "match_score": 0.635,
+      "verified": true
+    },
+    {
+      "task_id": "digest-05",
+      "pattern": "priority_digest",
+      "route": "workflow",
+      "workflow": "Priority Digest",
+      "match_score": 0.6956,
+      "verified": true
+    },
+    {
+      "task_id": "digest-06",
+      "pattern": "priority_digest",
+      "route": "workflow",
+      "workflow": "Priority Digest",
+      "match_score": 0.6535,
+      "verified": true
+    }
+  ]
+}

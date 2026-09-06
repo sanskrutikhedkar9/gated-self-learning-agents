@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "self-learning-flows"
+version = "0.1.0"
+description = "Framework-agnostic continual procedural memory for reliable agent workflow reuse"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Sanskruti Khedkar"}]
+keywords = ["agents", "llm", "procedural-memory", "workflows", "langgraph"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.69"]
+langgraph = ["langgraph>=1.0", "langgraph-checkpoint-sqlite>=2.0"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.9"]
+
+[project.scripts]
+self-learning-flows = "self_learning_flows.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["self_learning_flows", "mini_office"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
