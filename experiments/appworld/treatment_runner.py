@@ -310,6 +310,7 @@ class OpenAICompatibleCodeAgent:
             _, app, api = name.split(".", 2)
             api_words = cls._words(api)
             description_words = cls._words(str(contract.get("description", "")))
+            response_words = cls._response_words(contract.get("response_schemas"))
             if app == "supervisor" and api in cls._SUPERVISOR_APIS:
                 mandatory.append((name, contract))
                 continue
@@ -321,6 +322,7 @@ class OpenAICompatibleCodeAgent:
                 score += 8.0
             score += 4.0 * len(api_words & instruction_words)
             score += 1.5 * len(description_words & instruction_words)
+            score += 5.0 * len(response_words & instruction_words)
             if api in {"login", "search", "show", "list"}:
                 score += 0.25
             if score > 0:
@@ -342,6 +344,21 @@ class OpenAICompatibleCodeAgent:
         for raw in re.findall(r"[a-z0-9]+", value.lower().replace("_", " ")):
             word = raw[:-1] if len(raw) > 3 and raw.endswith("s") else raw
             words.add(word)
+        return words
+
+    @classmethod
+    def _response_words(cls, response_schemas: Any) -> set[str]:
+        """Extract response field names for capability-aware API ranking."""
+        if response_schemas is None:
+            return set()
+        words: set[str] = set()
+        if isinstance(response_schemas, dict):
+            for key, value in response_schemas.items():
+                words.update(cls._words(str(key)))
+                words.update(cls._response_words(value))
+        elif isinstance(response_schemas, list):
+            for value in response_schemas:
+                words.update(cls._response_words(value))
         return words
 
     @staticmethod
