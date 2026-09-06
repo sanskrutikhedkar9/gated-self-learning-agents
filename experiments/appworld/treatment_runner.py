@@ -225,7 +225,13 @@ class OpenAICompatibleCodeAgent:
             "`apis.api_docs.show_api_doc(app_name=..., api_name=...)` or "
             "`apis.api_docs.search_api_docs(query=...)`. Inspect results, use the supervisor's "
             "synthetic account credentials when login is required, make the requested changes, "
-            "then call the documented supervisor completion API. Do not guess API parameters."
+            "then call the documented supervisor completion API. Do not guess API parameters. "
+            "Use documentation only long enough to identify the next concrete business API. "
+            "After an API description is available, execute that API on the next turn instead "
+            "of requesting the same documentation again. Do not emit `pass`, imports-only code, "
+            "or repeated documentation calls. For read-only questions, gather the required "
+            "records, compute the answer, and always call `supervisor.complete_task` with the "
+            "answer when finished."
         )
 
 
