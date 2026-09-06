@@ -451,6 +451,25 @@ class OpenAICompatibleCodeAgent:
                     f"{', '.join(unknown_arguments)}; allowed arguments: "
                     f"{', '.join(sorted(properties)) or 'none'}"
                 )
+            instruction_words = cls._words(task_instruction)
+            if (
+                call_name == "apis.spotify.show_playlist_library"
+                and "playlist" in instruction_words
+                and {"my", "user"}.intersection(instruction_words)
+            ):
+                public_filter = next(
+                    (keyword for keyword in node.keywords if keyword.arg == "is_public"),
+                    None,
+                )
+                if (
+                    public_filter is not None
+                    and isinstance(public_filter.value, ast.Constant)
+                    and public_filter.value.value is True
+                ):
+                    return (
+                        "do not restrict the user's playlists to public playlists; omit "
+                        "is_public=True so private playlists are included"
+                    )
         unknown = sorted(
             {
                 name

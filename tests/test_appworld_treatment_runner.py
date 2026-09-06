@@ -273,6 +273,19 @@ class AppWorldTreatmentRunnerTests(unittest.TestCase):
         )
         self.assertIsNone(error)
 
+    def test_user_playlist_query_rejects_public_only_filter(self):
+        catalog = {
+            "apis.spotify.show_playlist_library": {
+                "parameters": {"properties": {"is_public": {}}}
+            }
+        }
+        error = OpenAICompatibleCodeAgent._validate_code(
+            "apis.spotify.show_playlist_library(is_public=True)",
+            catalog,
+            task_instruction="What is in my Spotify playlists?",
+        )
+        self.assertIn("private playlists", error)
+
     def test_cold_start_reuses_world_and_is_not_a_fallback(self):
         worlds = []
 
