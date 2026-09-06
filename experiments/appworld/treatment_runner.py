@@ -386,6 +386,7 @@ class AppWorldTreatmentRunner:
             variables=variables,
             token_usage=outcome.token_usage,
         )
+        episode = AppWorldTraceAdapter().normalize(**record)
         record["agent_debug"] = {
             "error": outcome.error,
             "last_code_length": len(outcome.last_code),
@@ -394,7 +395,6 @@ class AppWorldTreatmentRunner:
             and "api_docs" not in outcome.last_code,
         }
         self._append_record(record)
-        episode = AppWorldTraceAdapter().normalize(**record)
         if self.guard.allows_learning:
             self.guard.observe(self.engine, episode)
         return TaskRun(
