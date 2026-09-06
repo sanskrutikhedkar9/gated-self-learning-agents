@@ -75,6 +75,10 @@ class ToolRegistry:
     def schema_hashes(self) -> dict[str, str]:
         return {name: tool.schema_hash for name, tool in self._tools.items()}
 
+    def schemas(self) -> dict[str, dict[str, Any]]:
+        """Return detached schemas for compilation; never expose executable callables."""
+        return {name: copy.deepcopy(tool.input_schema) for name, tool in self._tools.items()}
+
     def invoke(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         tool = self.get(name)
         if tool is None:
@@ -178,7 +182,8 @@ class WorkflowExecutor:
         step_tools = {
             step.operation
             for step in self._walk_steps(workflow.steps)
-            if step.kind in {StepKind.TOOL, StepKind.PAGINATE, StepKind.FOREACH}
+            if step.kind in {StepKind.TOOL, StepKind.PAGINATE}
+            or (step.kind == StepKind.FOREACH and not step.body)
         }
         required_tools = set(workflow.required_tools) | step_tools
         if not workflow.steps:

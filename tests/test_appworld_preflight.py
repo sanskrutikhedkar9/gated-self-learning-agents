@@ -11,9 +11,21 @@ from experiments.appworld.preflight import (
     audit_protocol,
     audit_records,
 )
+from self_learning_flows.research_protocol import ProtocolConfig
 
 
 class AppWorldPreflightTests(unittest.TestCase):
+    def test_committed_treatment_and_ablation_protocols_are_valid(self):
+        root = Path("experiments/appworld")
+        names = {
+            path.name: ProtocolConfig.load(path).metadata["treatment"]
+            for path in root.glob("protocol*.json")
+        }
+        self.assertEqual(names["protocol.json"]["compiler_mode"], "structural")
+        self.assertEqual(names["protocol_exact.json"]["family_mode"], "exact")
+        self.assertEqual(names["protocol_semantic.json"]["matcher_mode"], "semantic")
+        self.assertEqual(names["protocol_annotate.json"]["compiler_mode"], "annotate")
+
     def test_protocol_audit_rejects_wrong_phase_split(self):
         protocol = {
             "train_splits": ["train"],

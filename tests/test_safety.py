@@ -56,7 +56,7 @@ class FakeStructuredModel:
             "description": "Create, assign, and acknowledge a ticket.",
             "preconditions": [],
             "postconditions": ["ticket is assigned"],
-            "step_executors": {},
+            "step_executors": [],
         }
 
 

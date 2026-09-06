@@ -30,16 +30,20 @@ small-model reuse cannot be claimed as new in isolation.
 
 The research hypothesis is that recurring agent behavior should become an
 empirically managed executable policy, not merely more context for the next LLM
-call. The proposed contribution is **verified continual procedural compilation
-with progressive model shedding**:
+call. The proposed contribution is **evidence-constrained continual workflow
+synthesis with progressive model shedding**:
 
-1. Induce a typed data-flow program from repeated, externally verified traces.
-2. Select the cheapest valid executor independently for each computation step.
-3. Promote or demote versions using held-out executions and confidence bounds.
-4. Ask the user before reuse and learn from approvals, edits, rejections, and
+1. Discover semantically equivalent trace families behind deterministic
+   side-effect and capability gates.
+2. Let an LLM propose a restricted typed program, then reject it unless static
+   validation and replay over every source episode succeed.
+3. Select the cheapest valid executor independently for each computation step.
+4. Promote immutable incumbent/challenger versions using held-out executions
+   and confidence bounds.
+5. Ask the user before reuse and learn from approvals, edits, rejections, and
    full-agent choices.
-5. Abstain on uncertain matches, verify state after execution, and fall back to
-   the original agent on failure or tool-schema drift.
+6. Abstain on uncertain semantic matches, verify state after execution, and
+   fall back to the original agent on failure or tool-schema drift.
 
 The key measurable claim is not simply higher task accuracy. It is a Pareto
 improvement in verified success, full-reasoning calls, tokens/cost, latency, and
@@ -67,6 +71,20 @@ unsafe false matches as experience accumulates.
 - static hand-written workflows as an upper-bound/control;
 - this system without confirmation, without verification, without lifecycle,
   and without model shedding.
+
+### Required compiler/retrieval ablation ladder
+
+The committed AppWorld protocols isolate the main value additions:
+
+1. `protocol_exact.json`: exact family + lexical match + deterministic compiler;
+2. `protocol_semantic.json`: hybrid family/match + deterministic compiler;
+3. `protocol_annotate.json`: hybrid family/match + annotation-only compiler;
+4. `protocol.json`: hybrid family/match + validated structural synthesis.
+
+Compare family coverage, offer precision, workflow execution success, official
+task success, full-agent avoidance, and total amortized tokens. This determines
+whether gains come from semantic discovery, semantic routing, or actual program
+synthesis instead of attributing everything to "the LLM."
 
 ### Metrics
 
@@ -109,5 +127,7 @@ Mini Office is an executable engineering benchmark, not a substitute for an
 external research benchmark. It proves the plumbing, catches data-flow bugs,
 and makes every claimed route inspectable. The AppWorld treatment runner,
 bounded control-flow IR, fresh-world fallback, phase guard, freeze manifest,
-and dependency lock are implemented. Paid train/dev/test runs with official
-evaluation are the next empirical milestone; no AppWorld result is claimed yet.
+dependency lock, hybrid discovery/routing, replay-validated LLM synthesis, and
+incumbent/challenger lifecycle are implemented. Paid train/dev/test runs with
+official evaluation are the next empirical milestone; no AppWorld result is
+claimed yet.

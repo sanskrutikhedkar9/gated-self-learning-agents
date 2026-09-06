@@ -107,15 +107,18 @@ class OpenAICompatibleStructuredModel:
         base_url: str = "http://localhost:11434/v1/chat/completions",
         api_key: str = "local",
         timeout_seconds: int = 120,
+        max_output_tokens: int = 6000,
     ):
         self._model_name = model
         self.base_url = base_url
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
+        self.max_output_tokens = max_output_tokens
         self.input_tokens = 0
         self.output_tokens = 0
         self.reasoning_calls = 0
         self.last_usage: dict[str, int] = {}
+        self.usage_by_category: dict[str, dict[str, int]] = {}
 
     @property
     def model_name(self) -> str:
@@ -148,6 +151,7 @@ class OpenAICompatibleStructuredModel:
         payload = {
             "model": self.model_name,
             "temperature": 0,
+            "max_tokens": self.max_output_tokens,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
@@ -178,10 +182,35 @@ class OpenAICompatibleStructuredModel:
             self.input_tokens += self.last_usage["input_tokens"]
             self.output_tokens += self.last_usage["output_tokens"]
             self.reasoning_calls += 1
+            category = self._category(system)
+            category_usage = self.usage_by_category.setdefault(
+                category,
+                {"input_tokens": 0, "output_tokens": 0, "reasoning_calls": 0},
+            )
+            for key, value in self.last_usage.items():
+                category_usage[key] += value
             content = body["choices"][0]["message"]["content"]
             return json.loads(content)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:2000]
+            raise ProviderError(
+                f"OpenAI-compatible structured request returned {exc.code}: {detail}"
+            ) from exc
         except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError) as exc:
             raise ProviderError(f"OpenAI-compatible structured request failed: {exc}") from exc
+
+    @staticmethod
+    def _category(system: str) -> str:
+        lowered = system.lower()
+        if "constrained workflow compiler" in lowered or "compile repeated" in lowered:
+            return "workflow_synthesis"
+        if "trace belongs to an existing reusable task family" in lowered:
+            return "family_discovery"
+        if "select an existing workflow" in lowered:
+            return "semantic_routing"
+        if "extract workflow variables" in lowered:
+            return "variable_extraction"
+        return "structured_other"
 
 
 class OpenAICompatibleComputeBackend:

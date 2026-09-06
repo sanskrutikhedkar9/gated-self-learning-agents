@@ -1,0 +1,30 @@
+{
+  "name": "appworld-ablation-annotation-only-v2",
+  "train_splits": ["train"],
+  "dev_splits": ["dev"],
+  "test_splits": ["test_normal", "test_challenge"],
+  "learn_on_train": true,
+  "calibrate_on_dev": true,
+  "freeze_before_test": true,
+  "fresh_world_fallback": true,
+  "supported_step_kinds": ["tool", "compute", "paginate", "foreach", "filter", "reduce", "branch"],
+  "metadata": {
+    "treatment": {
+      "compiler_mode": "annotate",
+      "family_mode": "hybrid",
+      "matcher_mode": "semantic",
+      "min_synthesis_observations": 3,
+      "max_repair_attempts": 2,
+      "test_time_learning": false
+    },
+    "promotion_config": {
+      "min_pattern_observations": 3,
+      "min_shadow_executions": 3,
+      "min_success_rate": 0.9,
+      "min_wilson_lower_bound": 0.4,
+      "quarantine_after_consecutive_failures": 2
+    },
+    "ablation": "hybrid semantic discovery/routing + annotation-only compiler"
+  }
+}
+

@@ -21,13 +21,46 @@ flowchart LR
     R --> A
     A --> V2{External verifier}
     V2 -- pass --> E[Immutable successful episode]
-    E --> P[Background pattern compiler]
-    P --> K[Candidate / shadow workflow]
+    E --> P[Hybrid task-family discovery]
+    P --> S2[Constrained LLM program proposal]
+    S2 --> G[Static validation + recorded replay]
+    G --> K[Candidate / shadow challenger]
 ```
 
 Observation is cheap and always on. `BackgroundWorkflowLearner` puts normalized
 episodes on a queue. Expensive workflow synthesis only happens after a verified
 success and can be placed behind a recurrence threshold in a production worker.
+
+## Learning pipeline
+
+The learning path separates semantic judgment from execution authority:
+
+```text
+verified traces
+  -> exact/hybrid family discovery
+  -> symbolic evidence (no raw results or concrete argument values)
+  -> strict-JSON LLM proposal in the bounded workflow IR
+  -> local capability/reference/schema validation
+  -> offline replay against every source episode
+  -> bounded repair (maximum two by default)
+  -> candidate/shadow workflow
+```
+
+Exact signatures require no model. Uncertain family assignments are reviewed by
+a model only after hard scope, action, and side-effect gates. A low-confidence or
+failed review creates a separate family. At request time, lexical retrieval
+shortlists workflows and a semantic reranker handles paraphrases; it cannot
+override status, scope, environment, tool availability, or negation checks.
+
+The compiler receives instructions with observed argument values templated out,
+symbolic `$input`/`$evidence` data flow, result shapes, and tool schemas. Concrete
+literals remain in process and can only be selected through opaque evidence IDs.
+The model never receives a callable tool registry.
+
+Recorded replay substitutes saved tool results and requires the proposal to
+reproduce each source episode's operation order and arguments. This validates
+observed paths, not unseen branches; unseen control flow remains a stated threat
+and must earn evidence through shadow executions.
 
 ## Data contracts
 
@@ -113,6 +146,15 @@ deterministic function -> SLM -> LLM -> full agent
 `fallback_executors` supplies the upward safety ladder. Downward movement is
 allowed only through a new workflow version and shadow evaluation. This avoids
 silently replacing a capable model based on one lucky example.
+
+## Incumbent/challenger updates
+
+Candidate workflows may be refined while still unpublished. Once a workflow is
+shadow or active, structurally novel family evidence creates a separate
+challenger instead of rewriting it. Train/dev routing deliberately exercises a
+shadow challenger. Test routing sees active workflows only. When the challenger
+meets the same promotion requirements, it becomes active and retires the prior
+incumbent; failed challengers leave the incumbent untouched.
 
 ## Scaling boundary
 

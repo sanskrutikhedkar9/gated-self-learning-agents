@@ -33,6 +33,7 @@ class AppWorldTraceAdapter:
         token_usage: dict[str, int] | None = None,
         evaluation: dict[str, Any] | None = None,
         tool_schema_hashes: dict[str, str] | None = None,
+        tool_schemas: dict[str, dict[str, Any]] | None = None,
     ) -> TaskEpisode:
         if type(passed) is not bool:
             raise ValueError("passed must be an explicit boolean from the evaluator")
@@ -126,6 +127,11 @@ class AppWorldTraceAdapter:
                 "source": source,
                 "evaluation_verified": evaluator_verified,
                 "tool_schema_hashes": schema_hashes,
+                "tool_schemas": {
+                    name: schema
+                    for name, schema in (tool_schemas or {}).items()
+                    if name in {trace.tool for trace in traces if trace.success}
+                },
             },
         )
 
@@ -375,6 +381,7 @@ class AppWorldTraceRecorder:
         task: Any,
         evaluation: Any,
         tool_schema_hashes: dict[str, str],
+        tool_schemas: dict[str, dict[str, Any]] | None = None,
         variables: dict[str, Any] | None = None,
         token_usage: dict[str, int] | None = None,
     ) -> dict[str, Any]:
@@ -398,6 +405,7 @@ class AppWorldTraceRecorder:
                 "success": passed,
             },
             tool_schema_hashes=tool_schema_hashes,
+            tool_schemas=tool_schemas,
         )
         return {
             "task": {"task_id": episode.task_id, "instruction": episode.instruction},
@@ -422,4 +430,5 @@ class AppWorldTraceRecorder:
             "variables": episode.variables,
             "token_usage": token_usage or {},
             "tool_schema_hashes": dict(tool_schema_hashes),
+            "tool_schemas": episode.metadata.get("tool_schemas", {}),
         }

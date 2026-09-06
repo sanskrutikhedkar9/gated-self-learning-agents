@@ -288,6 +288,8 @@ class WorkflowMatch:
     reliability: float
     eligible: bool
     reasons: list[str] = field(default_factory=list)
+    semantic_score: float | None = None
+    matcher: str = "lexical"
 
 
 @dataclass(slots=True)

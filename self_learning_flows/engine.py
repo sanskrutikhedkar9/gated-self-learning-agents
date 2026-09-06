@@ -7,9 +7,14 @@ import time
 from typing import Any
 
 from .compiler import DeterministicWorkflowCompiler
-from .discovery import structural_signature
+from .discovery import (
+    HybridEpisodeFamilyDiscoverer,
+    action_path,
+    structural_signature,
+    workflow_family_id,
+)
 from .execution import WorkflowExecutor
-from .matching import WorkflowMatcher
+from .matching import ModelSemanticReranker, WorkflowMatcher
 from .models import (
     ConfirmationDecision,
     ExecutionResult,
@@ -37,12 +42,16 @@ class SelfLearningFlowEngine:
         matcher: WorkflowMatcher | None = None,
         promotion_policy: PromotionPolicy | None = None,
         variable_extractor: VariableExtractor | None = None,
+        family_discoverer: HybridEpisodeFamilyDiscoverer | None = None,
+        semantic_reranker: ModelSemanticReranker | None = None,
     ):
         self.store = store
         self.compiler = compiler or DeterministicWorkflowCompiler()
         self.matcher = matcher or WorkflowMatcher()
         self.promotion_policy = promotion_policy or PromotionPolicy()
         self.variable_extractor = variable_extractor
+        self.family_discoverer = family_discoverer
+        self.semantic_reranker = semantic_reranker
 
     def observe(self, episode: TaskEpisode) -> WorkflowDefinition | None:
         """Record every episode; learn only from verified successes."""
@@ -55,15 +64,14 @@ class SelfLearningFlowEngine:
                     f"{existing_episode.scope!r}"
                 )
             if existing_episode.success and existing_episode.verified:
-                signature = existing_episode.metadata.get("structural_signature", "")
-                return self._workflow_for_signature(signature, existing_episode.scope)
+                return self._locate_workflow(existing_episode)
             return None
         self.store.add_episode(episode)
         if not (episode.success and episode.verified and episode.steps):
             return None
 
         signature = episode.metadata["structural_signature"]
-        workflow = self._workflow_for_signature(signature, episode.scope)
+        workflow = self._locate_workflow(episode)
         if workflow is not None and workflow.tool_schema_hashes:
             observed_hashes = episode.metadata.get("tool_schema_hashes", {})
             missing_contracts = set(workflow.required_tools) - set(observed_hashes)
@@ -84,16 +92,65 @@ class SelfLearningFlowEngine:
                 # contract provenance alter a replayable workflow.
                 return workflow
         episodes = self._episodes_for_workflow(workflow, episode)
+        incumbent: WorkflowDefinition | None = None
+        try:
+            if workflow is None:
+                workflow = self.compiler.compile([episode])
+            elif workflow.status == WorkflowStatus.CANDIDATE:
+                workflow = self.compiler.refine(workflow, episodes)
+            elif signature not in self._workflow_signatures(workflow):
+                # Published programs are immutable. Structurally novel evidence
+                # creates/refines a separate challenger in the same family.
+                incumbent = workflow
+                challenger = self._challenger_for(workflow)
+                if challenger is None:
+                    workflow = self.compiler.compile(episodes)
+                    workflow.metadata["incumbent_workflow_id"] = incumbent.workflow_id
+                else:
+                    challenger_episodes = self._episodes_for_workflow(challenger, episode)
+                    combined = self._unique_episodes([*episodes, *challenger_episodes])
+                    workflow = self.compiler.refine(challenger, combined)
+                    episodes = combined
+            # Matching an already represented shadow/active path only increases
+            # evidence; it never silently edits the executable program.
+        except Exception as exc:
+            if workflow is None:
+                return None
+            pending = list(workflow.metadata.get("pending_source_task_ids", []))
+            if episode.task_id not in pending:
+                pending.append(episode.task_id)
+            workflow.metadata["pending_source_task_ids"] = pending
+            workflow.metadata["last_compilation_error"] = f"{type(exc).__name__}: {exc}"
+            workflow.metadata["compilation_failures"] = (
+                int(workflow.metadata.get("compilation_failures", 0)) + 1
+            )
+            self.store.upsert_workflow(workflow)
+            return workflow
 
-        if workflow is None:
-            workflow = self.compiler.compile([episode])
-        elif workflow.status == WorkflowStatus.CANDIDATE:
-            workflow = self.compiler.refine(workflow, episodes)
-        # Once a definition is offered for held-out execution, new observations
-        # may add support but must not silently rewrite the executable program.
+        if workflow.metadata.pop("compilation_deferred", False):
+            pending = list(workflow.metadata.get("pending_source_task_ids", []))
+            if episode.task_id not in pending:
+                pending.append(episode.task_id)
+            workflow.metadata["pending_source_task_ids"] = pending
+            self.store.upsert_workflow(workflow)
+            return workflow
 
-        if episode.task_id not in workflow.stats.source_task_ids:
-            workflow.stats.source_task_ids.append(episode.task_id)
+        all_evidence = self._unique_episodes(
+            [
+                *episodes,
+                *[
+                    item
+                    for task_id in workflow.metadata.pop("pending_source_task_ids", [])
+                    if (item := self.store.get_episode(task_id)) is not None
+                ],
+            ]
+        )
+        self._annotate_family(workflow, all_evidence, incumbent=incumbent)
+        workflow.stats.source_task_ids = list(
+            dict.fromkeys(
+                [*workflow.stats.source_task_ids, *(item.task_id for item in all_evidence)]
+            )
+        )
         workflow.stats.pattern_observations = len(set(workflow.stats.source_task_ids))
         workflow.status = self.promotion_policy.evaluate(workflow)
         self.store.upsert_workflow(workflow)
@@ -104,7 +161,16 @@ class SelfLearningFlowEngine:
             scope=request.scope,
             statuses={WorkflowStatus.SHADOW.value, WorkflowStatus.ACTIVE.value},
         )
-        return self.matcher.rank(request, workflows)[:limit]
+        workflows = self._routing_leaders(workflows)
+        matches = self.matcher.rank(request, workflows)
+        if self.semantic_reranker is not None:
+            try:
+                matches = self.semantic_reranker.rerank(request, workflows, matches, self.matcher)
+            except Exception:
+                # Retrieval-model downtime degrades to conservative lexical
+                # routing and leaves the full-agent fallback available.
+                pass
+        return matches[:limit]
 
     def propose(self, request: TaskRequest) -> WorkflowProposal | None:
         matches = self.match(request, limit=2)
@@ -216,18 +282,50 @@ class SelfLearningFlowEngine:
                 executor_stats.successes += 1
             else:
                 executor_stats.failures += 1
+        previous_status = workflow.status
         workflow.status = self.promotion_policy.evaluate(workflow)
         self.store.upsert_workflow(workflow)
+        if previous_status != WorkflowStatus.ACTIVE and workflow.status == WorkflowStatus.ACTIVE:
+            incumbent_id = workflow.metadata.get("incumbent_workflow_id")
+            if incumbent_id:
+                incumbent = self.store.get_workflow(str(incumbent_id))
+                if incumbent is not None and incumbent.status != WorkflowStatus.RETIRED:
+                    incumbent.status = WorkflowStatus.RETIRED
+                    incumbent.metadata["retired_by_challenger"] = workflow.workflow_id
+                    workflow.metadata["replaced_incumbent"] = incumbent.workflow_id
+                    self.store.upsert_workflow(incumbent)
+                    self.store.upsert_workflow(workflow)
         return workflow
 
     def _workflow_for_signature(self, signature: str, scope: str) -> WorkflowDefinition | None:
-        lookup = getattr(self.store, "workflow_by_signature", None)
-        if lookup:
-            return lookup(signature, scope=scope)
-        for workflow in self.store.list_workflows(scope=scope):
-            if workflow.structural_signature == signature:
-                return workflow
-        return None
+        candidates = [
+            workflow
+            for workflow in self.store.list_workflows(scope=scope)
+            if signature in self._workflow_signatures(workflow)
+            and workflow.status not in {WorkflowStatus.QUARANTINED, WorkflowStatus.RETIRED}
+        ]
+        if not candidates:
+            return None
+        priority = {
+            WorkflowStatus.CANDIDATE: 3,
+            WorkflowStatus.SHADOW: 2,
+            WorkflowStatus.ACTIVE: 1,
+        }
+        return max(candidates, key=lambda item: priority.get(item.status, 0))
+
+    def _locate_workflow(self, episode: TaskEpisode) -> WorkflowDefinition | None:
+        signature = str(
+            episode.metadata.get("structural_signature") or structural_signature(episode)
+        )
+        exact = self._workflow_for_signature(signature, episode.scope)
+        if exact is not None:
+            return exact
+        if self.family_discoverer is None:
+            return None
+        return self.family_discoverer.find(
+            episode,
+            self.store.list_workflows(scope=episode.scope),
+        )
 
     def _episodes_for_workflow(
         self,
@@ -237,13 +335,74 @@ class SelfLearningFlowEngine:
         if workflow is None:
             return [current]
         episodes: list[TaskEpisode] = []
-        for task_id in workflow.stats.source_task_ids:
+        task_ids = [
+            *workflow.stats.source_task_ids,
+            *workflow.metadata.get("pending_source_task_ids", []),
+        ]
+        for task_id in dict.fromkeys(task_ids):
             episode = self.store.get_episode(task_id)
             if episode is not None:
                 episodes.append(episode)
         if all(item.task_id != current.task_id for item in episodes):
             episodes.append(current)
         return episodes
+
+    def _challenger_for(self, incumbent: WorkflowDefinition) -> WorkflowDefinition | None:
+        candidates = [
+            workflow
+            for workflow in self.store.list_workflows(scope=incumbent.scope)
+            if workflow.metadata.get("incumbent_workflow_id") == incumbent.workflow_id
+            and workflow.status in {WorkflowStatus.CANDIDATE, WorkflowStatus.SHADOW}
+        ]
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _unique_episodes(episodes: list[TaskEpisode]) -> list[TaskEpisode]:
+        return list({episode.task_id: episode for episode in episodes}.values())
+
+    @staticmethod
+    def _workflow_signatures(workflow: WorkflowDefinition) -> set[str]:
+        return {
+            workflow.structural_signature,
+            *[str(item) for item in workflow.metadata.get("structural_signatures", [])],
+        }
+
+    @staticmethod
+    def _annotate_family(
+        workflow: WorkflowDefinition,
+        episodes: list[TaskEpisode],
+        *,
+        incumbent: WorkflowDefinition | None,
+    ) -> None:
+        workflow.metadata["family_id"] = (
+            workflow_family_id(incumbent) if incumbent is not None else workflow_family_id(workflow)
+        )
+        workflow.metadata["structural_signatures"] = sorted(
+            {structural_signature(episode) for episode in episodes}
+        )
+        workflow.metadata["source_action_paths"] = [action_path(episode) for episode in episodes]
+
+    def _routing_leaders(self, workflows: list[WorkflowDefinition]) -> list[WorkflowDefinition]:
+        families: dict[str, list[WorkflowDefinition]] = {}
+        for workflow in workflows:
+            families.setdefault(workflow_family_id(workflow), []).append(workflow)
+        leaders: list[WorkflowDefinition] = []
+        for members in families.values():
+            challengers = [
+                item
+                for item in members
+                if item.status == WorkflowStatus.SHADOW
+                and item.metadata.get("incumbent_workflow_id")
+            ]
+            active = [item for item in members if item.status == WorkflowStatus.ACTIVE]
+            shadow = [item for item in members if item.status == WorkflowStatus.SHADOW]
+            if self.matcher.allow_shadow and challengers:
+                leaders.append(max(challengers, key=lambda item: item.version))
+            elif active:
+                leaders.append(max(active, key=lambda item: item.version))
+            elif self.matcher.allow_shadow and shadow:
+                leaders.append(max(shadow, key=lambda item: item.version))
+        return leaders
 
     def _require_workflow(self, workflow_id: str) -> WorkflowDefinition:
         workflow = self.store.get_workflow(workflow_id)

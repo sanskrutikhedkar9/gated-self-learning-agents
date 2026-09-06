@@ -29,14 +29,17 @@ from self_learning_flows.adapters.appworld import (
     build_appworld_tool_registry,
 )
 from self_learning_flows.compiler import (
+    DeterministicWorkflowCompiler,
     EvidenceGatedWorkflowCompiler,
     ModelAssistedWorkflowCompiler,
 )
+from self_learning_flows.discovery import HybridEpisodeFamilyDiscoverer
 from self_learning_flows.engine import SelfLearningFlowEngine
 from self_learning_flows.execution import WorkflowExecutor
 from self_learning_flows.extraction import StructuredVariableExtractor
-from self_learning_flows.matching import WorkflowMatcher
+from self_learning_flows.matching import ModelSemanticReranker, WorkflowMatcher
 from self_learning_flows.models import TaskRequest
+from self_learning_flows.promotion import PromotionConfig, PromotionPolicy
 from self_learning_flows.providers import OpenAICompatibleStructuredModel
 from self_learning_flows.research_protocol import (
     ExperimentPhase,
@@ -44,6 +47,7 @@ from self_learning_flows.research_protocol import (
     ProtocolGuard,
 )
 from self_learning_flows.storage import SQLiteStore
+from self_learning_flows.synthesis import ValidatedWorkflowCompiler
 
 
 @dataclass(slots=True)
@@ -83,6 +87,15 @@ class TaskRun:
     interactions: int = 0
     elapsed_ms: float = 0.0
     fresh_worlds: int = 1
+    agent_input_tokens: int = 0
+    agent_output_tokens: int = 0
+    agent_reasoning_calls: int = 0
+    workflow_input_tokens: int = 0
+    workflow_output_tokens: int = 0
+    workflow_reasoning_calls: int = 0
+    overhead_input_tokens: int = 0
+    overhead_output_tokens: int = 0
+    overhead_reasoning_calls: int = 0
 
 
 class OpenAICompatibleCodeAgent:
@@ -338,6 +351,9 @@ class AppWorldTreatmentRunner:
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 reasoning_calls=result.reasoning_calls,
+                workflow_input_tokens=result.input_tokens,
+                workflow_output_tokens=result.output_tokens,
+                workflow_reasoning_calls=result.reasoning_calls,
                 fresh_worlds=1,
             ),
             None,
@@ -358,6 +374,7 @@ class AppWorldTreatmentRunner:
             task=world.task,
             evaluation=evaluation,
             tool_schema_hashes=registry.schema_hashes(),
+            tool_schemas=registry.schemas(),
             variables=variables,
             token_usage=outcome.token_usage,
         )
@@ -374,6 +391,9 @@ class AppWorldTreatmentRunner:
             input_tokens=outcome.input_tokens,
             output_tokens=outcome.output_tokens,
             reasoning_calls=outcome.reasoning_calls,
+            agent_input_tokens=outcome.input_tokens,
+            agent_output_tokens=outcome.output_tokens,
+            agent_reasoning_calls=outcome.reasoning_calls,
             interactions=outcome.interactions,
             fresh_worlds=fresh_worlds,
         )
@@ -412,9 +432,12 @@ class AppWorldTreatmentRunner:
 
     def _add_overhead(self, task_run: TaskRun, before: tuple[int, int, int]) -> None:
         after = self._overhead_usage()
-        task_run.input_tokens += after[0] - before[0]
-        task_run.output_tokens += after[1] - before[1]
-        task_run.reasoning_calls += after[2] - before[2]
+        task_run.overhead_input_tokens = after[0] - before[0]
+        task_run.overhead_output_tokens = after[1] - before[1]
+        task_run.overhead_reasoning_calls = after[2] - before[2]
+        task_run.input_tokens += task_run.overhead_input_tokens
+        task_run.output_tokens += task_run.overhead_output_tokens
+        task_run.reasoning_calls += task_run.overhead_reasoning_calls
 
     @staticmethod
     def _close_world(world: Any) -> None:
@@ -464,6 +487,59 @@ def _world_factory(random_seed: int) -> Callable[[str, str], Any]:
     return create
 
 
+def _learning_curve(results: list[TaskRun]) -> list[dict[str, Any]]:
+    if not results:
+        return []
+    checkpoints = sorted(
+        {max(1, round(len(results) * fraction)) for fraction in (0.25, 0.5, 0.75, 1)}
+    )
+    curve = []
+    for count in checkpoints:
+        prefix = results[:count]
+        workflow_routes = sum(item.route == "workflow" for item in prefix)
+        curve.append(
+            {
+                "tasks_seen": count,
+                "task_success_rate": sum(item.success for item in prefix) / count,
+                "workflow_route_rate": workflow_routes / count,
+                "full_agent_avoidance_rate": workflow_routes / count,
+                "cumulative_reasoning_calls": sum(item.reasoning_calls for item in prefix),
+                "cumulative_tokens": sum(item.input_tokens + item.output_tokens for item in prefix),
+            }
+        )
+    return curve
+
+
+def _workflow_inventory(store: SQLiteStore) -> dict[str, Any]:
+    workflows = store.list_workflows(scope="appworld")
+    statuses: dict[str, int] = {}
+    compilers: dict[str, int] = {}
+    for workflow in workflows:
+        status = str(workflow.status)
+        compiler = str(workflow.metadata.get("compiler", "unknown"))
+        statuses[status] = statuses.get(status, 0) + 1
+        compilers[compiler] = compilers.get(compiler, 0) + 1
+    return {
+        "workflows": len(workflows),
+        "families": len(
+            {
+                str(workflow.metadata.get("family_id") or workflow.workflow_id)
+                for workflow in workflows
+            }
+        ),
+        "statuses": statuses,
+        "compilers": compilers,
+        "validated_llm_workflows": sum(
+            workflow.metadata.get("compiler") == "validated_llm" for workflow in workflows
+        ),
+        "compilation_failures": sum(
+            int(workflow.metadata.get("compilation_failures", 0)) for workflow in workflows
+        ),
+        "source_episodes": sum(workflow.stats.pattern_observations for workflow in workflows),
+        "held_out_executions": sum(workflow.stats.executions for workflow in workflows),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", choices=[item.value for item in ExperimentPhase], required=True)
@@ -475,6 +551,7 @@ def main() -> int:
     parser.add_argument("--base-url", default="https://api.openai.com/v1")
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--records", type=Path)
+    parser.add_argument("--summary", type=Path)
     parser.add_argument("--protocol", type=Path, default=Path("experiments/appworld/protocol.json"))
     parser.add_argument("--freeze-manifest", type=Path)
     parser.add_argument("--seal-after-run", action="store_true")
@@ -482,6 +559,15 @@ def main() -> int:
     parser.add_argument("--task-id", action="append", default=[])
     parser.add_argument("--random-seed", type=int, default=100)
     parser.add_argument("--max-interactions", type=int, default=25)
+    parser.add_argument(
+        "--compiler-mode",
+        choices=["deterministic", "annotate", "structural"],
+        default="structural",
+    )
+    parser.add_argument("--family-mode", choices=["exact", "hybrid"], default="hybrid")
+    parser.add_argument("--matcher-mode", choices=["lexical", "semantic"], default="semantic")
+    parser.add_argument("--min-synthesis-observations", type=int, default=3)
+    parser.add_argument("--max-repair-attempts", type=int, default=2)
     args = parser.parse_args()
 
     api_key = os.getenv(args.api_key_env)
@@ -490,6 +576,31 @@ def main() -> int:
     config = ProtocolConfig.load(args.protocol)
     phase = ExperimentPhase(args.phase)
     guard = ProtocolGuard(config, phase, args.dataset_name)
+    if args.min_synthesis_observations < 1:
+        parser.error("--min-synthesis-observations must be positive")
+    if not 0 <= args.max_repair_attempts <= 5:
+        parser.error("--max-repair-attempts must be between 0 and 5")
+    declared_treatment = config.metadata.get("treatment", {})
+    actual_treatment = {
+        "compiler_mode": args.compiler_mode,
+        "family_mode": args.family_mode,
+        "matcher_mode": args.matcher_mode,
+        "min_synthesis_observations": args.min_synthesis_observations,
+        "max_repair_attempts": args.max_repair_attempts,
+    }
+    mismatches = {
+        key: (declared_treatment[key], value)
+        for key, value in actual_treatment.items()
+        if key in declared_treatment and declared_treatment[key] != value
+    }
+    if args.condition == "treatment" and mismatches:
+        parser.error(
+            "runner settings differ from the predeclared protocol: "
+            + ", ".join(
+                f"{key}={actual!r} (declared {declared!r})"
+                for key, (declared, actual) in mismatches.items()
+            )
+        )
     repository = Path(__file__).resolve().parents[2]
     source_commit = _git_commit(repository)
     if not (repository / "experiments" / "appworld" / "requirements.lock").exists():
@@ -501,11 +612,42 @@ def main() -> int:
         api_key=api_key,
     )
     store = SQLiteStore(args.database)
+    deterministic_compiler = DeterministicWorkflowCompiler()
+    if args.compiler_mode == "deterministic":
+        compiler = deterministic_compiler
+    elif args.compiler_mode == "annotate":
+        compiler = EvidenceGatedWorkflowCompiler(
+            ModelAssistedWorkflowCompiler(structured_model, deterministic_compiler),
+            min_observations=args.min_synthesis_observations,
+            fallback=deterministic_compiler,
+        )
+    else:
+        compiler = EvidenceGatedWorkflowCompiler(
+            ValidatedWorkflowCompiler(
+                structured_model,
+                fallback=deterministic_compiler,
+                max_repair_attempts=args.max_repair_attempts,
+            ),
+            min_observations=args.min_synthesis_observations,
+            fallback=deterministic_compiler,
+        )
+    matcher = WorkflowMatcher(allow_shadow=phase != ExperimentPhase.TEST)
+    promotion_values = config.metadata.get("promotion_config", {})
+    promotion_policy = PromotionPolicy(PromotionConfig(**promotion_values))
     engine = SelfLearningFlowEngine(
         store,
-        compiler=EvidenceGatedWorkflowCompiler(ModelAssistedWorkflowCompiler(structured_model)),
-        matcher=WorkflowMatcher(allow_shadow=phase != ExperimentPhase.TEST),
+        compiler=compiler,
+        matcher=matcher,
+        promotion_policy=promotion_policy,
         variable_extractor=StructuredVariableExtractor(structured_model),
+        family_discoverer=(
+            HybridEpisodeFamilyDiscoverer(structured_model)
+            if args.family_mode == "hybrid"
+            else None
+        ),
+        semantic_reranker=(
+            ModelSemanticReranker(structured_model) if args.matcher_mode == "semantic" else None
+        ),
     )
     if phase == ExperimentPhase.TEST and args.condition == "treatment":
         if args.freeze_manifest is None:
@@ -536,6 +678,8 @@ def main() -> int:
         overhead_model=structured_model,
     )
     results = runner.run(task_ids)
+    workflow_routes = sum(item.route == "workflow" for item in results)
+    full_agent_routes = sum(item.route != "workflow" for item in results)
     summary = {
         "run_id": runner.run_id,
         "phase": phase.value,
@@ -543,16 +687,47 @@ def main() -> int:
         "condition": args.condition,
         "source_commit": source_commit,
         "model": args.model,
+        "compiler_mode": args.compiler_mode,
+        "family_mode": args.family_mode,
+        "matcher_mode": args.matcher_mode,
         "tasks": len(results),
         "successes": sum(item.success for item in results),
-        "workflow_routes": sum(item.route == "workflow" for item in results),
+        "workflow_routes": workflow_routes,
+        "successful_workflow_routes": sum(
+            item.route == "workflow" and item.success for item in results
+        ),
+        "workflow_route_success_rate": (
+            sum(item.route == "workflow" and item.success for item in results) / workflow_routes
+            if workflow_routes
+            else None
+        ),
+        "workflow_execution_model_free_routes": sum(
+            item.route == "workflow" and item.workflow_reasoning_calls == 0 for item in results
+        ),
+        "fully_model_free_routes": sum(
+            item.route == "workflow"
+            and item.workflow_reasoning_calls == 0
+            and item.overhead_reasoning_calls == 0
+            for item in results
+        ),
+        "full_agent_routes": full_agent_routes,
+        "full_agent_avoidance_rate": workflow_routes / len(results) if results else 0.0,
         "fresh_world_fallbacks": sum(item.route == "fresh_world_fallback" for item in results),
         "input_tokens": sum(item.input_tokens for item in results),
         "output_tokens": sum(item.output_tokens for item in results),
         "reasoning_calls": sum(item.reasoning_calls for item in results),
+        "agent_reasoning_calls": sum(item.agent_reasoning_calls for item in results),
+        "workflow_reasoning_calls": sum(item.workflow_reasoning_calls for item in results),
+        "overhead_reasoning_calls": sum(item.overhead_reasoning_calls for item in results),
+        "structured_model_usage": structured_model.usage_by_category,
+        "workflow_inventory": _workflow_inventory(store),
+        "learning_curve": _learning_curve(results),
         "results": [asdict(item) for item in results],
     }
     print(json.dumps(summary, indent=2))
+    if args.summary is not None:
+        args.summary.parent.mkdir(parents=True, exist_ok=True)
+        args.summary.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 
     if phase == ExperimentPhase.TEST and args.condition == "treatment":
         guard.validate_frozen(
@@ -574,6 +749,11 @@ def main() -> int:
                 "dataset_name": args.dataset_name,
                 "random_seed": args.random_seed,
                 "max_interactions": args.max_interactions,
+                "compiler_mode": args.compiler_mode,
+                "family_mode": args.family_mode,
+                "matcher_mode": args.matcher_mode,
+                "min_synthesis_observations": args.min_synthesis_observations,
+                "max_repair_attempts": args.max_repair_attempts,
             },
         )
     return 0

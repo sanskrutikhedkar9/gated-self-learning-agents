@@ -19,7 +19,7 @@ from .models import (
     WorkflowDefinition,
     WorkflowStep,
 )
-from .protocols import StructuredModel
+from .protocols import StructuredModel, WorkflowCompiler
 
 
 def _value_type(value: Any) -> str:
@@ -492,10 +492,18 @@ class ModelAssistedWorkflowCompiler:
             "preconditions": {"type": "array", "items": {"type": "string"}},
             "postconditions": {"type": "array", "items": {"type": "string"}},
             "step_executors": {
-                "type": "object",
-                "additionalProperties": {
-                    "type": "string",
-                    "enum": ["deterministic", "slm", "llm"],
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["step_id", "executor"],
+                    "properties": {
+                        "step_id": {"type": "string"},
+                        "executor": {
+                            "type": "string",
+                            "enum": ["deterministic", "slm", "llm"],
+                        },
+                    },
                 },
             },
         },
@@ -582,7 +590,12 @@ class ModelAssistedWorkflowCompiler:
         draft.description = str(response["description"]).strip() or draft.description
         draft.preconditions = [str(item) for item in response["preconditions"]]
         draft.postconditions = [str(item) for item in response["postconditions"]]
-        executor_map = response.get("step_executors", {})
+        raw_executors = response.get("step_executors", [])
+        executor_map = {
+            str(item.get("step_id")): item.get("executor")
+            for item in raw_executors
+            if isinstance(item, dict)
+        }
         for step in draft.steps:
             proposed = executor_map.get(step.id)
             if proposed in {"deterministic", "slm", "llm"}:
@@ -603,7 +616,7 @@ class EvidenceGatedWorkflowCompiler:
 
     def __init__(
         self,
-        model_compiler: ModelAssistedWorkflowCompiler,
+        model_compiler: WorkflowCompiler,
         *,
         min_observations: int = 3,
         fallback: DeterministicWorkflowCompiler | None = None,
@@ -623,5 +636,14 @@ class EvidenceGatedWorkflowCompiler:
         episodes: list[TaskEpisode],
     ) -> WorkflowDefinition:
         if len(episodes) < self.min_observations:
-            return self.fallback.refine(workflow, episodes)
+            try:
+                return self.fallback.refine(workflow, episodes)
+            except ValueError:
+                # A structurally different but semantically related trace is
+                # retained as pending evidence. It must not promote the old
+                # executable draft before enough evidence exists for synthesis.
+                deferred = copy.deepcopy(workflow)
+                deferred.metadata["compilation_deferred"] = True
+                deferred.metadata["deferred_observations"] = len(episodes)
+                return deferred
         return self.model_compiler.refine(workflow, episodes)

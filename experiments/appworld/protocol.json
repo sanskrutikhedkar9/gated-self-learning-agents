@@ -1,5 +1,5 @@
 {
-  "name": "appworld-continual-v1",
+  "name": "appworld-continual-v2-hybrid-synthesis",
   "train_splits": ["train"],
   "dev_splits": ["dev"],
   "test_splits": ["test_normal", "test_challenge"],
@@ -17,6 +17,14 @@
     "branch"
   ],
   "metadata": {
+    "treatment": {
+      "compiler_mode": "structural",
+      "family_mode": "hybrid",
+      "matcher_mode": "semantic",
+      "min_synthesis_observations": 3,
+      "max_repair_attempts": 2,
+      "test_time_learning": false
+    },
     "promotion_config": {
       "min_pattern_observations": 3,
       "min_shadow_executions": 3,
@@ -25,8 +33,8 @@
       "quarantine_after_consecutive_failures": 2
     },
     "phase_policy": {
-      "train": "compile workflows and update reliability",
-      "dev": "freeze programs; update routing reliability only",
+      "train": "discover families, synthesize validated programs, and update reliability",
+      "dev": "freeze program structure; update routing reliability only",
       "test": "read-only workflows; evaluator outcomes never update memory"
     },
     "test_routing_statuses": ["active"],

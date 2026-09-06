@@ -37,9 +37,16 @@ def _list_workflows(args: argparse.Namespace) -> int:
                     "name": workflow.name,
                     "status": str(workflow.status),
                     "version": workflow.version,
+                    "family_id": workflow.metadata.get("family_id", workflow.workflow_id),
+                    "compiler": workflow.metadata.get("compiler", "unknown"),
                     "observations": workflow.stats.pattern_observations,
+                    "pending_observations": len(
+                        workflow.metadata.get("pending_source_task_ids", [])
+                    ),
                     "executions": workflow.stats.executions,
                     "reliability": round(workflow.stats.reliability, 4),
+                    "compilation_failures": int(workflow.metadata.get("compilation_failures", 0)),
+                    "last_compilation_error": workflow.metadata.get("last_compilation_error"),
                 }
                 for workflow in workflows
             ],

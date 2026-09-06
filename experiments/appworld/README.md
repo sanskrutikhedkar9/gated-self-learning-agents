@@ -15,8 +15,9 @@ The runner enforces these boundaries:
 - official test evaluation scores the attempt but never selects a fallback;
 - an observable workflow execution failure discards the whole AppWorld instance
   and initializes a fresh task world before the full agent runs;
-- every model call, including variable extraction and model-assisted compilation,
-  is included in token/call accounting.
+- every model call, including semantic family discovery/routing, variable
+  extraction, compilation, and bounded repair, is included in token/call
+  accounting by category.
 
 The predeclared settings are in `experiments/appworld/protocol.json`.
 
@@ -54,7 +55,7 @@ previously exposed, revoke it before running.
 The runner refuses a dirty Git repository. Commit the source, then run:
 
 ```bash
-python experiments/appworld/preflight.py \
+python -m experiments.appworld.preflight \
   --repository . \
   --protocol experiments/appworld/protocol.json \
   --phase train \
@@ -70,7 +71,7 @@ validates phase/split/freeze consistency.
 Confirm the live AppWorld/schema boundary without a model call:
 
 ```bash
-python experiments/appworld/dryrun.py --task-id 50e1ac9_1
+python -m experiments.appworld.dryrun --task-id 50e1ac9_1
 ```
 
 ## 3. One-task smoke run
@@ -80,7 +81,7 @@ First prove the full-agent boundary and official evaluator with one train task:
 ```bash
 mkdir -p experiments/appworld/outputs
 
-python experiments/appworld/treatment_runner.py \
+python -m experiments.appworld.treatment_runner \
   --phase train \
   --dataset-name train \
   --condition treatment \
@@ -88,42 +89,64 @@ python experiments/appworld/treatment_runner.py \
   --model gpt-4o \
   --database experiments/appworld/outputs/slf_smoke.db \
   --records experiments/appworld/outputs/slf_smoke_records.jsonl \
+  --summary experiments/appworld/outputs/slf_smoke_summary.json \
+  --compiler-mode structural \
+  --family-mode hybrid \
+  --matcher-mode semantic \
   --limit 1
 
 appworld evaluate slf_train_smoke train
 ```
 
-The first task should route to `full_agent`; no workflow has evidence yet. Check
-the printed provider token counts and the official AppWorld score before doing a
-larger run.
+The first task should route to `full_agent`; no workflow has evidence yet. This
+tests the provider, trace recorder, official evaluator, and database boundary,
+but it does not yet exercise synthesis. Check the saved summary and AppWorld
+score before doing a larger run. Do not reuse the smoke database for the full
+train stream because the smoke task ID is already recorded idempotently.
 
 ## 4. Treatment learning and dev calibration
 
 Use one database for the treatment sequence:
 
 ```bash
-python experiments/appworld/treatment_runner.py \
+python -m experiments.appworld.treatment_runner \
   --phase train \
   --dataset-name train \
   --condition treatment \
-  --experiment-name slf_train_v1 \
+  --experiment-name slf_train_v2 \
   --model gpt-4o \
-  --database experiments/appworld/outputs/slf_v1.db \
-  --records experiments/appworld/outputs/slf_v1_records.jsonl
+  --database experiments/appworld/outputs/slf_v2.db \
+  --records experiments/appworld/outputs/slf_v2_records.jsonl \
+  --summary experiments/appworld/outputs/slf_train_v2_summary.json \
+  --compiler-mode structural \
+  --family-mode hybrid \
+  --matcher-mode semantic
 
-python experiments/appworld/treatment_runner.py \
+python -m experiments.appworld.treatment_runner \
   --phase dev \
   --dataset-name dev \
   --condition treatment \
-  --experiment-name slf_dev_v1 \
+  --experiment-name slf_dev_v2 \
   --model gpt-4o \
-  --database experiments/appworld/outputs/slf_v1.db \
-  --records experiments/appworld/outputs/slf_v1_records.jsonl \
-  --freeze-manifest experiments/appworld/outputs/slf_v1_freeze.json \
+  --database experiments/appworld/outputs/slf_v2.db \
+  --records experiments/appworld/outputs/slf_v2_records.jsonl \
+  --summary experiments/appworld/outputs/slf_dev_v2_summary.json \
+  --freeze-manifest experiments/appworld/outputs/slf_v2_freeze.json \
+  --compiler-mode structural \
+  --family-mode hybrid \
+  --matcher-mode semantic \
   --seal-after-run
 
-appworld evaluate slf_dev_v1 dev
+appworld evaluate slf_dev_v2 dev
+self-learning-flows list \
+  --database experiments/appworld/outputs/slf_v2.db \
+  --scope appworld
 ```
+
+Do not continue to test unless the list contains at least one `active` workflow.
+Candidate means there was insufficient repeated evidence; shadow means there
+were not yet enough successful held-out executions. Compilation failures and
+their sanitized validator errors remain in workflow metadata for analysis.
 
 Do not choose thresholds after viewing test results. If routing, promotion, or
 model settings change after dev, create a new named protocol version and repeat
@@ -135,46 +158,74 @@ Run treatment only after test preflight validates the exact database, protocol,
 source commit, and freeze manifest:
 
 ```bash
-python experiments/appworld/preflight.py \
+python -m experiments.appworld.preflight \
   --repository . \
   --protocol experiments/appworld/protocol.json \
   --phase test \
   --split test_normal \
-  --database experiments/appworld/outputs/slf_v1.db \
-  --freeze-manifest experiments/appworld/outputs/slf_v1_freeze.json
+  --database experiments/appworld/outputs/slf_v2.db \
+  --freeze-manifest experiments/appworld/outputs/slf_v2_freeze.json
 
-python experiments/appworld/treatment_runner.py \
+python -m experiments.appworld.treatment_runner \
   --phase test \
   --dataset-name test_normal \
   --condition treatment \
-  --experiment-name slf_test_normal_v1 \
+  --experiment-name slf_test_normal_v2 \
   --model gpt-4o \
-  --database experiments/appworld/outputs/slf_v1.db \
-  --freeze-manifest experiments/appworld/outputs/slf_v1_freeze.json
+  --database experiments/appworld/outputs/slf_v2.db \
+  --summary experiments/appworld/outputs/slf_test_normal_v2_summary.json \
+  --freeze-manifest experiments/appworld/outputs/slf_v2_freeze.json \
+  --compiler-mode structural \
+  --family-mode hybrid \
+  --matcher-mode semantic
 
-python experiments/appworld/treatment_runner.py \
+python -m experiments.appworld.treatment_runner \
   --phase test \
   --dataset-name test_normal \
   --condition baseline \
-  --experiment-name slf_baseline_test_normal_v1 \
+  --experiment-name slf_baseline_test_normal_v2 \
   --model gpt-4o \
-  --database experiments/appworld/outputs/baseline_v1.db
+  --database experiments/appworld/outputs/baseline_v2.db \
+  --summary experiments/appworld/outputs/slf_baseline_test_normal_v2_summary.json
 
-appworld evaluate slf_test_normal_v1 test_normal
-appworld evaluate slf_baseline_test_normal_v1 test_normal
+appworld evaluate slf_test_normal_v2 test_normal
+appworld evaluate slf_baseline_test_normal_v2 test_normal
 ```
 
 Use the same model, random seed, maximum interactions, code commit, and task
 order for both conditions. Repeat with predeclared seeds for confidence
 intervals; do not report one lucky run.
 
+## 6. Ablations after the first full treatment
+
+Do not pay for all ablations until the full treatment completes without runner
+errors. The committed protocols isolate the contribution:
+
+| Protocol | Compiler | Family discovery | Request matching |
+|---|---|---|---|
+| `protocol_exact.json` | deterministic | exact | lexical |
+| `protocol_semantic.json` | deterministic | hybrid | semantic |
+| `protocol_annotate.json` | annotation only | hybrid | semantic |
+| `protocol.json` | replay-validated structural LLM | hybrid | semantic |
+
+Each ablation needs its own fresh database, records, experiment names, and freeze
+manifest. Pass the corresponding `--protocol`, `--compiler-mode`,
+`--family-mode`, and `--matcher-mode`; the runner aborts if CLI settings differ
+from the predeclared protocol. The matched full-agent baseline can be reused for
+paired comparisons when model, prompt, task order, seed, and source commit are
+identical.
+
 ## What is recorded
 
 `treatment_runner.py` writes aggregate per-task routing and cost metrics to the
-SQLite `metrics` table. Optional JSONL traces are rich enough to compile data
-flow: each call contains arguments, result, success, latency, evaluator
-provenance, and schema hashes. Credential-shaped fields are replaced with stable
-within-episode markers before storage.
+SQLite `metrics` table and, with `--summary`, to a standalone JSON report.
+Provider usage is split into agent, workflow compute, and structured overhead;
+the latter is further categorized as family discovery, workflow synthesis,
+semantic routing, and variable extraction. Optional JSONL traces contain
+arguments, result, success, latency, evaluator provenance, used tool schemas,
+and schema hashes. Credential-shaped fields are replaced with stable
+within-episode markers before storage. The compiler receives symbolic shapes and
+references, not concrete stored results or argument values.
 
 Raw AppWorld data, output databases, task traces, and credentials stay ignored
 by Git. Commit only aggregate, non-sensitive results allowed by AppWorld's data

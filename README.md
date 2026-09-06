@@ -1,16 +1,16 @@
 # SelfLearningFlows
 
 SelfLearningFlows is a framework-neutral procedural-memory layer for tool-using
-agents. It watches verified successful executions, finds repeated tool paths,
-compiles them into typed workflows, asks for confirmation on a matching future
-task, and executes each step with the cheapest safe computation tier.
+agents. It watches verified successful executions, discovers semantically
+equivalent task families, compiles them into replay-validated typed workflows,
+and executes familiar requests with the cheapest safe computation tier.
 
 The intended behavior is simple:
 
 ```text
-unfamiliar task -> full agent -> verified trace -> candidate workflow
-repeated trace  -> shadow workflow -> confirmed replay -> active workflow
-familiar task   -> tools only / small model -> verify -> done or safe fallback
+unfamiliar task -> full agent -> verified trace -> candidate family
+repeated family -> constrained LLM synthesis -> validate/replay -> shadow
+familiar task   -> semantic gate -> tools/SLM -> verify -> done or clean fallback
 ```
 
 This repository contains a working library, a LangGraph adapter, an AppWorld
@@ -21,19 +21,27 @@ versioned 24-task continual-learning dataset.
 
 - Always-on, asynchronous observation of every task; only externally verified
   successes can become procedural memory.
-- Structural discovery from normalized multi-agent tool traces.
+- Hybrid family discovery: exact structure first, deterministic action/intent
+  gates second, and a constrained LLM only for uncertain semantic cases.
 - Deterministic anti-unification of concrete values into `$input.*` and
   `$steps.*` data-flow bindings.
 - A bounded workflow IR for pagination, foreach loops, deterministic filters
   and reducers, and explicit branches. Bound exhaustion fails rather than
   silently truncating work.
-- Optional LLM annotation using strict structured output. The model cannot
-  invent, delete, or reorder tools in the conservative compiler.
+- Constrained LLM program synthesis for variables, data flow, optional branches,
+  bounded loops, pagination, filters, and reducers. Unknown tools, invalid
+  references, missing contracts, unbounded control flow, and unreplayable
+  proposals are rejected locally; at most two repair attempts are allowed.
+- The earlier exact deterministic and annotation-only compilers remain available
+  as safety fallbacks and research ablations.
 - Four execution tiers: deterministic, SLM, LLM, and full-agent fallback.
 - Confirmation payloads with workflow name, description, variables, confidence,
   and approve/edit/reject/full-agent choices.
 - Candidate -> shadow -> active -> quarantined lifecycle based on observed
   support, verified execution rate, Wilson confidence, and consecutive failures.
+- Published workflows are immutable. Structurally new evidence creates a shadow
+  challenger; only a challenger that passes the promotion policy retires its
+  incumbent.
 - Tool-contract hashing, postcondition verification, immutable episodes,
   versioned workflows, SQLite WAL persistence, and negative feedback memory.
 - Core package has no mandatory third-party dependency.
@@ -117,33 +125,38 @@ existing full-agent node. See `examples/langgraph_self_learning.py`. LangGraph's
 checkpointer remains short-term thread state; SelfLearningFlows is the learned,
 executable procedural-memory layer above it.
 
-## Optional models
+## Model-assisted learning and routing
 
 - No model: deterministic tool paths, parsers, templates, rules.
 - SLM: bounded classification, extraction, or short transformation through an
   OpenAI-compatible local endpoint.
-- LLM: conservative workflow annotation or genuinely difficult semantic steps.
+- LLM: uncertain family discovery, structural workflow synthesis, semantic
+  reranking, variable extraction, or genuinely difficult compute steps.
 - Full agent: unmatched tasks, rejected proposals, failed verification, or
   unsafe/ambiguous conditions.
 
-`ModelAssistedWorkflowCompiler` works with `AnthropicStructuredModel`; the
-provider uses strict JSON schema output. The original prototype's misspelled
-`ANTROPIC_API_KEY` and the correct `ANTHROPIC_API_KEY` are both supported.
+`ValidatedWorkflowCompiler` uses strict JSON schema output, but the model's JSON
+is only a proposal. Static validation and recorded-trace replay remain local and
+deterministic.
 
 ```python
 from self_learning_flows import (
     EvidenceGatedWorkflowCompiler,
-    ModelAssistedWorkflowCompiler,
+    HybridEpisodeFamilyDiscoverer,
+    ModelSemanticReranker,
     SelfLearningFlowEngine,
     SQLiteStore,
     StructuredVariableExtractor,
+    ValidatedWorkflowCompiler,
 )
-from self_learning_flows.providers import AnthropicStructuredModel
+from self_learning_flows.providers import OpenAICompatibleStructuredModel
 
-model = AnthropicStructuredModel.from_env()
+model = OpenAICompatibleStructuredModel.from_env()
 engine = SelfLearningFlowEngine(
     SQLiteStore("state/workflows.db"),
-    compiler=EvidenceGatedWorkflowCompiler(ModelAssistedWorkflowCompiler(model)),
+    compiler=EvidenceGatedWorkflowCompiler(ValidatedWorkflowCompiler(model)),
+    family_discoverer=HybridEpisodeFamilyDiscoverer(model),
+    semantic_reranker=ModelSemanticReranker(model),
     variable_extractor=StructuredVariableExtractor(model),
 )
 ```
@@ -175,8 +188,8 @@ the paid runs and official evaluations are completed.
 The broad idea “learn and retrieve workflows from memory” is not novel by
 itself. A defensible paper contribution is the combination evaluated here:
 
-1. continual trace-to-executable-workflow induction rather than prompt-only
-   memory;
+1. evidence-constrained continual program synthesis rather than prompt-only
+   memory, with semantic family induction and replay before publication;
 2. empirical, per-step **progressive model shedding** from full reasoning to
    LLM, SLM, or model-free execution;
 3. risk-controlled promotion, confirmation, abstention, verification,
